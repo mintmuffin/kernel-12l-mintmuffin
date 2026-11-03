@@ -2309,126 +2309,6 @@
  		seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
  			   inode_mark->wd, inode->i_ino, inode->i_sb->s_dev,
  			   inotify_mark_user_mask(mark));
---- a/fs/open.c
-+++ b/fs/open.c
-@@ -31,6 +31,9 @@
- #include <linux/ima.h>
- #include <linux/dnotify.h>
- #include <linux/compat.h>
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+#include <linux/susfs_def.h>
-+#endif
- 
- #include "internal.h"
- 
-@@ -364,7 +367,7 @@
-  * We do this by temporarily clearing all FS-related capabilities and
-  * switching the fsuid/fsgid around to the real ones.
-  */
--SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
-+long do_faccessat(int dfd, const char __user *filename, int mode)
- {
- 	const struct cred *old_cred;
- 	struct cred *override_cred;
-@@ -461,9 +464,14 @@
- 	return res;
- }
- 
-+SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
-+{
-+	return do_faccessat(dfd, filename, mode);
-+}
-+
- SYSCALL_DEFINE2(access, const char __user *, filename, int, mode)
- {
--	return sys_faccessat(AT_FDCWD, filename, mode);
-+	return do_faccessat(AT_FDCWD, filename, mode);
- }
- 
- SYSCALL_DEFINE1(chdir, const char __user *, filename)
-@@ -805,6 +813,7 @@
- 	     likely(f->f_op->write || f->f_op->write_iter))
- 		f->f_mode |= FMODE_CAN_WRITE;
- 
-+	f->f_write_hint = WRITE_LIFE_NOT_SET;
- 	f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
- 
- 	file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
-@@ -1080,16 +1089,28 @@
- }
- EXPORT_SYMBOL(filp_clone_open);
- 
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
-+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+
- long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
- {
- 	struct open_flags op;
- 	int fd = build_open_flags(flags, mode, &op);
- 	struct filename *tmp;
- 
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+	struct filename *fake_filename = NULL;
-+	bool is_inode_open_redirect = false;
-+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+
- 	if (fd)
- 		return fd;
- 
- 	tmp = getname(filename);
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+retry:
-+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
- 	if (IS_ERR(tmp))
- 		return PTR_ERR(tmp);
- 
-@@ -1103,6 +1124,21 @@
- 			f = ERR_PTR(-EPERM);
- 		}
- #endif
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+		if (!is_inode_open_redirect && f && !IS_ERR(f)) {
-+			struct inode *inode = file_inode(f);
-+			if (SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode)) {
-+				fake_filename = susfs_open_redirect_spoof_do_sys_openat(inode);
-+				if (fake_filename && !IS_ERR(fake_filename)) {
-+					is_inode_open_redirect = true;
-+					filp_close(f, NULL);
-+					putname(tmp);
-+					tmp = fake_filename;
-+					goto retry;
-+				}
-+			}
-+		}
-+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
- 		if (IS_ERR(f)) {
- 			put_unused_fd(fd);
- 			fd = PTR_ERR(f);
-@@ -1191,6 +1227,23 @@
- }
- EXPORT_SYMBOL(sys_close);
- 
-+/**
-+ * close_range() - Close all file descriptors in a given range.
-+ *
-+ * @fd:     starting file descriptor to close
-+ * @max_fd: last file descriptor to close
-+ * @flags:  reserved for future extensions
-+ *
-+ * This closes a range of file descriptors. All file descriptors
-+ * from @fd up to and including @max_fd are closed.
-+ * Currently, errors to close a given file descriptor are ignored.
-+ */
-+SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
-+		unsigned int, flags)
-+{
-+	return __close_range(fd, max_fd, flags);
-+}
-+
- /*
-  * This routine simulates a hangup on the tty, to arrange that users
-  * are given clean terminals at login time.
 --- a/fs/proc/base.c
 +++ b/fs/proc/base.c
 @@ -96,6 +96,9 @@
@@ -5375,395 +5255,6 @@
  #endif /* CONFIG_TRANSPARENT_HUGEPAGE || CONFIG_HUGETLBFS */
  
  #if USE_SPLIT_PTE_PTLOCKS && ALLOC_SPLIT_PTLOCKS
---- a/mm/shmem.c
-+++ b/mm/shmem.c
-@@ -33,6 +33,8 @@
- #include <linux/swap.h>
- #include <linux/uio.h>
- #include <linux/khugepaged.h>
-+
-+#include <asm/tlbflush.h> /* for arch/microblaze update_mmu_cache() */
- 
- static struct vfsmount *shm_mnt;
- 
-@@ -70,9 +72,15 @@
- #include <linux/syscalls.h>
- #include <linux/fcntl.h>
- #include <uapi/linux/memfd.h>
-+#include <linux/userfaultfd_k.h>
-+#include <linux/rmap.h>
- 
- #include <asm/uaccess.h>
- #include <asm/pgtable.h>
-+
-+#ifdef CONFIG_KSU_SUSFS
-+#include <linux/susfs.h>
-+#endif
- 
- #include "internal.h"
- 
-@@ -101,12 +109,12 @@
- #ifdef CONFIG_TMPFS
- static unsigned long shmem_default_max_blocks(void)
- {
--	return totalram_pages / 2;
-+	return totalram_pages() / 2;
- }
- 
- static unsigned long shmem_default_max_inodes(void)
- {
--	return min(totalram_pages - totalhigh_pages, totalram_pages / 2);
-+	return min(totalram_pages() - totalhigh_pages(), totalram_pages() / 2);
- }
- #endif
- 
-@@ -115,13 +123,14 @@
- 				struct shmem_inode_info *info, pgoff_t index);
- static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
- 		struct page **pagep, enum sgp_type sgp,
--		gfp_t gfp, struct mm_struct *fault_mm, int *fault_type);
-+		gfp_t gfp, struct vm_area_struct *vma,
-+		struct vm_fault *vmf, int *fault_type);
- 
- int shmem_getpage(struct inode *inode, pgoff_t index,
- 		struct page **pagep, enum sgp_type sgp)
- {
- 	return shmem_getpage_gfp(inode, index, pagep, sgp,
--		mapping_gfp_mask(inode->i_mapping), NULL, NULL);
-+		mapping_gfp_mask(inode->i_mapping), NULL, NULL, NULL);
- }
- 
- static inline struct shmem_sb_info *SHMEM_SB(struct super_block *sb)
-@@ -221,6 +230,11 @@
- static const struct inode_operations shmem_special_inode_operations;
- static const struct vm_operations_struct shmem_vm_ops;
- static struct file_system_type shmem_fs_type;
-+
-+bool vma_is_shmem(struct vm_area_struct *vma)
-+{
-+	return vma->vm_ops == &shmem_vm_ops;
-+}
- 
- static LIST_HEAD(shmem_swaplist);
- static DEFINE_MUTEX(shmem_swaplist_mutex);
-@@ -978,10 +992,10 @@
- }
- EXPORT_SYMBOL_GPL(shmem_truncate_range);
- 
--static int shmem_getattr(struct vfsmount *mnt, struct dentry *dentry,
--			 struct kstat *stat)
--{
--	struct inode *inode = dentry->d_inode;
-+static int shmem_getattr(const struct path *path, struct kstat *stat,
-+			 u32 request_mask, unsigned int query_flags)
-+{
-+	struct inode *inode = path->dentry->d_inode;
- 	struct shmem_inode_info *info = SHMEM_I(inode);
- 
- 	if (info->alloced - info->swapped != inode->i_mapping->nrpages) {
-@@ -1569,12 +1583,12 @@
-  * vm. If we swap it in we mark it dirty since we also free the swap
-  * entry since a page cannot live in both the swap and page cache.
-  *
-- * fault_mm and fault_type are only supplied by shmem_fault:
-+ * vma, vmf, and fault_type are only supplied by shmem_fault:
-  * otherwise they are NULL.
-  */
- static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
- 	struct page **pagep, enum sgp_type sgp, gfp_t gfp,
--	struct mm_struct *fault_mm, int *fault_type)
-+	struct vm_area_struct *vma, struct vm_fault *vmf, int *fault_type)
- {
- 	struct address_space *mapping = inode->i_mapping;
- 	struct shmem_inode_info *info = SHMEM_I(inode);
-@@ -1596,6 +1610,22 @@
- repeat:
- 	swap.val = 0;
- 	page = find_lock_entry(mapping, index);
-+
-+	if (page && vma && userfaultfd_minor(vma)) {
-+		struct fault_env fe = {
-+			.vma = vma,
-+			.address = (unsigned long)vmf->virtual_address,
-+			.flags = vmf->flags,
-+		};
-+
-+		if (!radix_tree_exceptional_entry(page)) {
-+			unlock_page(page);
-+			put_page(page);
-+		}
-+		*fault_type = handle_userfault(&fe, VM_UFFD_MINOR);
-+		return 0;
-+	}
-+
- 	if (radix_tree_exceptional_entry(page)) {
- 		swap = radix_to_swp_entry(page);
- 		page = NULL;
-@@ -1628,7 +1658,7 @@
- 	 * bring it back from swap or allocate.
- 	 */
- 	sbinfo = SHMEM_SB(inode->i_sb);
--	charge_mm = fault_mm ? : current->mm;
-+	charge_mm = vma ? vma->vm_mm : current->mm;
- 
- 	if (swap.val) {
- 		/* Look it up and read it in.. */
-@@ -1638,7 +1668,8 @@
- 			if (fault_type) {
- 				*fault_type |= VM_FAULT_MAJOR;
- 				count_vm_event(PGMAJFAULT);
--				mem_cgroup_count_vm_event(fault_mm, PGMAJFAULT);
-+				mem_cgroup_count_vm_event(charge_mm,
-+							  PGMAJFAULT);
- 			}
- 			/* Here we actually start the io */
- 			page = shmem_swapin(swap, gfp, info, index);
-@@ -1707,6 +1738,17 @@
- 		swap_free(swap);
- 
- 	} else {
-+		if (vma && userfaultfd_missing(vma)) {
-+			struct fault_env fe = {
-+				.vma = vma,
-+				.address = (unsigned long)vmf->virtual_address,
-+				.flags = vmf->flags,
-+			};
-+
-+			*fault_type = handle_userfault(&fe, VM_UFFD_MISSING);
-+			return 0;
-+		}
-+
- 		/* shmem_symlink() */
- 		if (mapping->a_ops != &shmem_aops)
- 			goto alloc_nohuge;
-@@ -1969,7 +2011,7 @@
- 		sgp = SGP_NOHUGE;
- 
- 	error = shmem_getpage_gfp(inode, vmf->pgoff, &vmf->page, sgp,
--				  gfp, vma->vm_mm, &ret);
-+				  gfp, vma, vmf, &ret);
- 	if (error)
- 		return ((error == -ENOMEM) ? VM_FAULT_OOM : VM_FAULT_SIGBUS);
- 	return ret;
-@@ -2111,6 +2153,27 @@
- 
- static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
- {
-+	struct shmem_inode_info *info = SHMEM_I(file_inode(file));
-+
-+	if (info->seals & F_SEAL_FUTURE_WRITE) {
-+		/*
-+		 * New PROT_WRITE and MAP_SHARED mmaps are not allowed when
-+		 * the future-write seal is active.
-+		 */
-+		if ((vma->vm_flags & VM_SHARED) &&
-+		    (vma->vm_flags & VM_WRITE))
-+			return -EPERM;
-+
-+		/*
-+		 * A sealed memfd can still be mapped MAP_SHARED and
-+		 * read-only. Do not let mprotect() restore write access
-+		 * on shared mappings. Private mappings must retain
-+		 * VM_MAYWRITE so their normal COW behavior is preserved.
-+		 */
-+		if (vma->vm_flags & VM_SHARED)
-+			vma->vm_flags &= ~VM_MAYWRITE;
-+	}
-+
- 	file_accessed(file);
- 	vma->vm_ops = &shmem_vm_ops;
- 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE) &&
-@@ -2197,6 +2260,120 @@
- 	return mapping->host->i_sb->s_op == &shmem_ops;
- }
- 
-+#ifdef CONFIG_USERFAULTFD
-+int shmem_mfill_atomic_pte(struct mm_struct *dst_mm,
-+			   pmd_t *dst_pmd,
-+			   struct vm_area_struct *dst_vma,
-+			   unsigned long dst_addr,
-+			   unsigned long src_addr,
-+			   bool zeropage,
-+			   struct page **pagep)
-+{
-+	struct inode *inode = file_inode(dst_vma->vm_file);
-+	struct shmem_inode_info *info = SHMEM_I(inode);
-+	struct address_space *mapping = inode->i_mapping;
-+	gfp_t gfp = mapping_gfp_mask(mapping);
-+	pgoff_t pgoff = linear_page_index(dst_vma, dst_addr);
-+	struct mem_cgroup *memcg;
-+	void *page_kaddr;
-+	struct page *page;
-+	int ret;
-+	pgoff_t max_off;
-+
-+	if (!shmem_inode_acct_block(inode, 1)) {
-+		/*
-+		 * We may have got a page, returned -ENOENT triggering a retry,
-+		 * and now we find ourselves with -ENOMEM. Release the page, to
-+		 * avoid a BUG_ON in our caller.
-+		 */
-+		if (unlikely(*pagep)) {
-+			put_page(*pagep);
-+			*pagep = NULL;
-+		}
-+		return -ENOMEM;
-+	}
-+
-+	if (!*pagep) {
-+		ret = -ENOMEM;
-+		page = shmem_alloc_page(gfp, info, pgoff);
-+		if (!page)
-+			goto out_unacct_blocks;
-+
-+		if (!zeropage) {	/* COPY */
-+			page_kaddr = kmap_atomic(page);
-+			ret = copy_from_user(page_kaddr,
-+					     (const void __user *)src_addr,
-+					     PAGE_SIZE);
-+			kunmap_atomic(page_kaddr);
-+
-+			/* fallback to copy_from_user outside mmap_sem */
-+			if (unlikely(ret)) {
-+				*pagep = page;
-+				ret = -ENOENT;
-+				/* don't free the page */
-+				goto out_unacct_blocks;
-+			}
-+		} else {		/* ZEROPAGE */
-+			clear_highpage(page);
-+		}
-+	} else {
-+		page = *pagep;
-+		*pagep = NULL;
-+	}
-+
-+	VM_BUG_ON(PageLocked(page));
-+	VM_BUG_ON(PageSwapBacked(page));
-+	__SetPageLocked(page);
-+	__SetPageSwapBacked(page);
-+	__SetPageUptodate(page);
-+
-+	ret = -EFAULT;
-+	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-+	if (unlikely(pgoff >= max_off))
-+		goto out_release;
-+
-+	ret = mem_cgroup_try_charge(page, dst_mm, gfp, &memcg, false);
-+	if (ret)
-+		goto out_release;
-+
-+	ret = radix_tree_maybe_preload(gfp & GFP_RECLAIM_MASK);
-+	if (!ret) {
-+		ret = shmem_add_to_page_cache(page, mapping, pgoff, NULL);
-+		radix_tree_preload_end();
-+	}
-+	if (ret)
-+		goto out_release_uncharge;
-+
-+	mem_cgroup_commit_charge(page, memcg, false, false);
-+
-+	ret = mfill_atomic_install_pte(dst_mm, dst_pmd, dst_vma, dst_addr,
-+				       page, true, false, NULL);
-+	if (ret)
-+		goto out_delete_from_cache;
-+
-+	spin_lock_irq(&info->lock);
-+	info->alloced++;
-+	inode->i_blocks += BLOCKS_PER_PAGE;
-+	shmem_recalc_inode(inode);
-+	spin_unlock_irq(&info->lock);
-+
-+	SetPageDirty(page);
-+	unlock_page(page);
-+	return 0;
-+out_delete_from_cache:
-+	delete_from_page_cache(page);
-+	goto out_release;
-+out_release_uncharge:
-+	mem_cgroup_cancel_charge(page, memcg, false);
-+out_release:
-+	unlock_page(page);
-+	put_page(page);
-+out_unacct_blocks:
-+	shmem_inode_unacct_blocks(inode, 1);
-+	return ret;
-+}
-+#endif /* CONFIG_USERFAULTFD */
-+
- #ifdef CONFIG_TMPFS
- static const struct inode_operations shmem_symlink_inode_operations;
- static const struct inode_operations shmem_short_symlink_operations;
-@@ -2218,7 +2395,8 @@
- 
- 	/* i_mutex is held by caller */
- 	if (unlikely(info->seals)) {
--		if (info->seals & F_SEAL_WRITE)
-+		if (info->seals &
-+		    (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE))
- 			return -EPERM;
- 		if ((info->seals & F_SEAL_GROW) && pos + len > inode->i_size)
- 			return -EPERM;
-@@ -2578,7 +2756,8 @@
- #define F_ALL_SEALS (F_SEAL_SEAL | \
- 		     F_SEAL_SHRINK | \
- 		     F_SEAL_GROW | \
--		     F_SEAL_WRITE)
-+		     F_SEAL_WRITE | \
-+		     F_SEAL_FUTURE_WRITE)
- 
- int shmem_add_seals(struct file *file, unsigned int seals)
- {
-@@ -2602,6 +2781,7 @@
- 	 *   SEAL_SHRINK: Prevent the file from shrinking
- 	 *   SEAL_GROW: Prevent the file from growing
- 	 *   SEAL_WRITE: Prevent write access to the file
-+	 *   SEAL_FUTURE_WRITE: Prevent future write access
- 	 *
- 	 * As we don't require any trust relationship between two parties, we
- 	 * must prevent seals from being removed. Therefore, sealing a file
-@@ -2705,7 +2885,8 @@
- 		DECLARE_WAIT_QUEUE_HEAD_ONSTACK(shmem_falloc_waitq);
- 
- 		/* protected by i_mutex */
--		if (info->seals & F_SEAL_WRITE) {
-+		if (info->seals &
-+		    (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE)) {
- 			error = -EPERM;
- 			goto out;
- 		}
-@@ -3367,7 +3548,7 @@
- 			size = memparse(value,&rest);
- 			if (*rest == '%') {
- 				size <<= PAGE_SHIFT;
--				size *= totalram_pages;
-+				size *= totalram_pages();
- 				do_div(size, 100);
- 				rest++;
- 			}
-@@ -3555,6 +3736,13 @@
- 		goto err_name;
- 	}
- 
-+#ifdef CONFIG_KSU_SUSFS_SUS_MEMFD
-+	if (susfs_sus_memfd(name)) {
-+		error = -EFAULT;
-+		goto err_name;
-+	}
-+#endif
-+
- 	fd = get_unused_fd_flags((flags & MFD_CLOEXEC) ? O_CLOEXEC : 0);
- 	if (fd < 0) {
- 		error = fd;
-@@ -4168,7 +4356,7 @@
- 
- 	BUG_ON(mapping->a_ops != &shmem_aops);
- 	error = shmem_getpage_gfp(inode, index, &page, SGP_CACHE,
--				  gfp, NULL, NULL);
-+				  gfp, NULL, NULL, NULL);
- 	if (error)
- 		page = ERR_PTR(error);
- 	else
 --- a/security/selinux/avc.c
 +++ b/security/selinux/avc.c
 @@ -50,6 +50,13 @@
@@ -5818,3 +5309,46 @@
 +	u64 susfs_last_fake_mnt_id;
 +#endif
  	struct thread_struct thread;
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -1085,11 +1085,18 @@
+ 	struct open_flags op;
+ 	int fd = build_open_flags(flags, mode, &op);
+ 	struct filename *tmp;
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++	struct filename *fake_filename = NULL;
++	bool is_inode_open_redirect = false;
++#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+ 
+ 	if (fd)
+ 		return fd;
+ 
+ 	tmp = getname(filename);
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++retry:
++#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+ 	if (IS_ERR(tmp))
+ 		return PTR_ERR(tmp);
+ 
+@@ -1103,6 +1110,21 @@
+ 			f = ERR_PTR(-EPERM);
+ 		}
+ #endif
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++		if (!is_inode_open_redirect && f && !IS_ERR(f)) {
++			struct inode *inode = file_inode(f);
++			if (SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode)) {
++				fake_filename = susfs_open_redirect_spoof_do_sys_openat(inode);
++				if (fake_filename && !IS_ERR(fake_filename)) {
++					is_inode_open_redirect = true;
++					filp_close(f, NULL);
++					putname(tmp);
++					tmp = fake_filename;
++					goto retry;
++				}
++			}
++		}
++#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+ 		if (IS_ERR(f)) {
+ 			put_unused_fd(fd);
+ 			fd = PTR_ERR(f);
