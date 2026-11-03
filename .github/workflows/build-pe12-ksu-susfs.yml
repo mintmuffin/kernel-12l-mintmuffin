@@ -39,41 +39,38 @@ jobs:
         run: |
           git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
 
-      - name: Integrate KernelSU (xxksu with non-GKI hook engine)
+      - name: Integrate KernelSU v1.0.3 & SUSFS
         run: |
           cd kernel_src
-          git clone --depth=1 --branch xxksu-susfs https://github.com/gavdoc38/KernelSU.git KernelSU
+          git clone --depth=1 --branch v1.0.3 https://github.com/tiann/KernelSU.git KernelSU
+          cd KernelSU
           
-          # Patch KernelSU to support KernelSU Next manager APK (com.rifsxd.ksunext)
+          # 1. Revert commit 898e9d4 (restore non-GKI manual hook compatibility)
+          git apply --reverse ../../susfs_patches/revert_898.patch
+          
+          # 2. Apply SUSFS patch for KernelSU
+          git apply ../../susfs_patches/10_enable_susfs_for_ksu.patch
+          
+          # 3. Allow CONFIG_KSU without KPROBES
+          sed -i 's/depends on KPROBES && EXT4_FS/depends on EXT4_FS/g' kernel/Kconfig
+          
+          # 4. Disable kprobes in KernelSU code
+          find kernel/ -type f -exec sed -i 's/#ifdef CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/g' {} +
+          
+          # 5. Add KernelSU Next signature to apk_sign.c (com.rifsxd.ksunext)
           python3 - <<'PYEOF'
-          # Patch throne_tracker.c
-          with open('KernelSU/kernel/manager/throne_tracker.c', 'r') as f:
-              c = f.read()
-          if 'com.rifsxd.ksunext' not in c:
-              c = c.replace(
-                  '#define is_midorisu_apk(tgt) extra_manager_apk(tgt, "com.midori.supermanager")',
-                  '#define is_midorisu_apk(tgt) extra_manager_apk(tgt, "com.midori.supermanager")\n#define is_ksunext_apk(tgt) extra_manager_apk(tgt, "com.rifsxd.ksunext")'
-              )
-              c = c.replace(
-                  '#define test_extra_pkgs(tgt) (is_kowsu_apk(tgt) || is_midorisu_apk(tgt))',
-                  '#define test_extra_pkgs(tgt) (is_kowsu_apk(tgt) || is_midorisu_apk(tgt) || is_ksunext_apk(tgt))'
-              )
-              with open('KernelSU/kernel/manager/throne_tracker.c', 'w') as f:
-                  f.write(c)
-
-          # Patch apk_sign.c to accept KernelSU Next signature
-          with open('KernelSU/kernel/manager/apk_sign.c', 'r') as f:
+          with open('kernel/apk_sign.c', 'r') as f:
               c = f.read()
           if '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7' not in c:
-              target = 'bool is_manager_apk(char *path)\n{'
-              replacement = 'bool is_manager_apk(char *path)\n{\n\t// KernelSU Next (rifsxd release)\n\tif (check_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"))\n\t\treturn true;\n'
+              target = 'check_v2_signature(path, 384, "7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4")'
+              replacement = target + ' ||\n\t\tcheck_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7")'
               c = c.replace(target, replacement)
-              with open('KernelSU/kernel/manager/apk_sign.c', 'w') as f:
+              with open('kernel/apk_sign.c', 'w') as f:
                   f.write(c)
-          print("Patched KernelSU manager identity for KernelSU-Next!")
+          print("Added KernelSU Next signature to apk_sign.c!")
           PYEOF
-
-          # Copy KernelSU/kernel into drivers/kernelsu
+          
+          cd ..
           cp -r KernelSU/kernel drivers/kernelsu
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -82,14 +79,132 @@ jobs:
       - name: Integrate SUSFS into Kernel
         run: |
           cd kernel_src
-          # Copy susfs source files
           cp ../susfs_patches/susfs.c fs/
           cp ../susfs_patches/susfs.h include/linux/
           cp ../susfs_patches/susfs_def.h include/linux/
 
           # Apply SUSFS kernel patch
-          patch -p1 --fuzz=3 < ../susfs_patches/50_add_susfs_in_kernel-4.9.patch || true
-          echo "Applied SUSFS kernel patch!"
+          git apply --verbose ../susfs_patches/50_add_susfs_in_kernel-4.9.patch
+          echo "Applied SUSFS kernel patch cleanly!"
+
+      - name: Apply Non-GKI Manual Hooks to Kernel
+        run: |
+          cd kernel_src
+          python3 - <<'PYEOF'
+          # 1. fs/exec.c
+          with open('fs/exec.c', 'r') as f:
+              c = f.read()
+          exec_decl = """#ifdef CONFIG_KSU
+          extern bool ksu_execveat_hook __read_mostly;
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+          			void *envp, int *flags);
+          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+          				 void *argv, void *envp, int *flags);
+          #endif
+          """
+          exec_hook = """#ifdef CONFIG_KSU
+          	if (unlikely(ksu_execveat_hook))
+          		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+          	else
+          		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+          #endif
+          """
+          if 'ksu_execveat_hook' not in c:
+              target_fn = 'static int do_execveat_common(int fd, struct filename *filename,'
+              c = c.replace(target_fn, exec_decl + target_fn)
+              target_body = '	char *pathbuf = NULL;'
+              c = c.replace(target_body, exec_hook + target_body)
+              with open('fs/exec.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/exec.c")
+
+          # 2. fs/open.c
+          with open('fs/open.c', 'r') as f:
+              c = f.read()
+          open_decl = """#ifdef CONFIG_KSU
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+          			        int *flags);
+          #endif
+          """
+          open_hook = """#ifdef CONFIG_KSU
+          	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+          #endif
+          """
+          if 'ksu_handle_faccessat' not in c:
+              target_fn = 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)'
+              c = c.replace(target_fn, open_decl + target_fn)
+              target_body = '	unsigned int lookup_flags = LOOKUP_FOLLOW;'
+              c = c.replace(target_body, target_body + '\n' + open_hook)
+              with open('fs/open.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/open.c")
+
+          # 3. fs/read_write.c
+          with open('fs/read_write.c', 'r') as f:
+              c = f.read()
+          rw_decl = """#ifdef CONFIG_KSU
+          extern bool ksu_vfs_read_hook __read_mostly;
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+          			size_t *count_ptr, loff_t **pos);
+          #endif
+          """
+          rw_hook = """#ifdef CONFIG_KSU
+          	if (unlikely(ksu_vfs_read_hook))
+          		ksu_handle_vfs_read(&file, &buf, &count, &pos);
+          #endif
+          """
+          if 'ksu_handle_vfs_read' not in c:
+              target_fn = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)'
+              c = c.replace(target_fn, rw_decl + target_fn)
+              target_body = '	ssize_t ret;'
+              c = c.replace(target_body, target_body + '\n' + rw_hook)
+              with open('fs/read_write.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/read_write.c")
+
+          # 4. fs/stat.c
+          with open('fs/stat.c', 'r') as f:
+              c = f.read()
+          stat_decl = """#ifdef CONFIG_KSU
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          #endif
+          """
+          stat_hook = """#ifdef CONFIG_KSU
+          	ksu_handle_stat(&dfd, &filename, &flag);
+          #endif
+          """
+          if 'ksu_handle_stat' not in c:
+              target_fn = 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,'
+              c = c.replace(target_fn, stat_decl + target_fn)
+              target_body = '	unsigned int lookup_flags = 0;'
+              c = c.replace(target_body, target_body + '\n' + stat_hook)
+              with open('fs/stat.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/stat.c")
+
+          # 5. drivers/input/input.c
+          with open('drivers/input/input.c', 'r') as f:
+              c = f.read()
+          input_decl = """#ifdef CONFIG_KSU
+          extern bool ksu_input_hook __read_mostly;
+          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+          #endif
+          """
+          input_hook = """#ifdef CONFIG_KSU
+          	if (unlikely(ksu_input_hook))
+          		ksu_handle_input_handle_event(&type, &code, &value);
+          #endif
+          """
+          if 'ksu_handle_input_handle_event' not in c:
+              target_fn = 'static void input_handle_event(struct input_dev *dev,'
+              c = c.replace(target_fn, input_decl + target_fn)
+              target_body = '	int disposition = input_get_disposition(dev, type, code, &value);'
+              c = c.replace(target_body, target_body + '\n' + input_hook)
+              with open('drivers/input/input.c', 'w') as f:
+                  f.write(c)
+              print("Patched drivers/input/input.c")
+          PYEOF
+          echo "All non-GKI manual hooks applied successfully!"
 
       - name: Apply Green Screen ALPM Fix
         run: |
@@ -138,8 +253,12 @@ jobs:
           CONFIG_KALLSYMS_ALL=y
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
           CONFIG_KSU_SUSFS_TRY_UMOUNT=y
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
@@ -148,7 +267,6 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_KSU_SUSFS_SUS_MAP=y
-          CONFIG_KSU_SUSFS_SUS_SU=y
           EOF
 
           mkdir -p out
@@ -160,66 +278,53 @@ jobs:
 
       - name: Compile Kernel
         run: |
-          JOBS=$(nproc)
           cd kernel_src
-
-          EXTRA_KCFLAGS="-Wno-error -Wno-format -Wno-error=format \
-            -Wno-address -Wno-nonnull \
-            -Wno-implicit-fallthrough -Wno-unused-const-variable \
-            -Wno-maybe-uninitialized -Wno-array-bounds -Wno-stringop-overflow \
-            -Wno-misleading-indentation -Wno-missing-attributes \
-            -Wno-packed-not-aligned -Wno-restrict -Wno-format-overflow \
-            -Wno-enum-conversion -fno-pie"
-
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out KCFLAGS="$EXTRA_KCFLAGS" -j${JOBS} Image dtbs
-          echo "Kernel compiled successfully!"
-
-          # Verify that KernelSU and SUSFS compiled into objects
-          echo "=== Verifying compilation artifacts ==="
-          ls -la out/drivers/kernelsu/
-          ls -la out/fs/susfs.o
+          make -j$(nproc --all) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out
 
       - name: Append DTB to Image
         run: |
+          cd kernel_src
           DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          DTB_DIR="kernel_src/out/arch/arm64/boot/dts/exynos"
-          IMAGE="kernel_src/out/arch/arm64/boot/Image"
-          OUT_IMAGE="kernel_src/out/arch/arm64/boot/Image-dtb"
-
-          cat "$IMAGE" > "$OUT_IMAGE"
-          for dtb in "$DTB_DIR"/exynos9810-${DEVICE}*.dtb; do
-            if [ -f "$dtb" ]; then
-              cat "$dtb" >> "$OUT_IMAGE"
-              echo "Appended $dtb"
-            fi
-          done
-          ls -lh "$OUT_IMAGE"
+          DTB_PATH="out/arch/arm64/boot/dts/exynos/exynos9810-${DEVICE}.dtb"
+          if [ -f "$DTB_PATH" ]; then
+            cat out/arch/arm64/boot/Image "$DTB_PATH" > out/arch/arm64/boot/Image-dtb
+            echo "Successfully generated Image-dtb with appended device DTB!"
+          else
+            echo "Device DTB not found at $DTB_PATH, finding all generated DTBs..."
+            find out/arch/arm64/boot/dts/ -name "*.dtb"
+            cp out/arch/arm64/boot/Image out/arch/arm64/boot/Image-dtb
+          fi
 
       - name: Package AnyKernel3 flashable zip
         run: |
           DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
-          cd AK3
-          rm -rf .git
-          sed -i "s/device.name1=.*/device.name1=${DEVICE}/" anykernel.sh
-          sed -i "s/device.name2=.*/device.name2=universal9810/" anykernel.sh
-          sed -i 's/kernel.string=.*/kernel.string=PE12 mintmuffin-mafushii Kernel (GreenFix+KSU+SUSFS)/' anykernel.sh
-          cp ../kernel_src/out/arch/arm64/boot/Image-dtb Image
-          find ../kernel_src/out/arch/arm64/boot/dts/exynos/ -name "*.dtb" -exec cp {} . \;
-          zip -r9 ../anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip *
-          cd ..
+          mkdir -p anykernel3_pkg
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3_pkg/
+          cp kernel_src/out/arch/arm64/boot/Image-dtb anykernel3_pkg/Image
 
-          # Also create raw Image-dtb artifact
-          cp kernel_src/out/arch/arm64/boot/Image-dtb Image-${DEVICE}-pe12-ksu-susfs
+          # Configure anykernel.sh for Exynos 9810
+          sed -i "s/device.name1=.*/device.name1=${DEVICE}/g" anykernel3_pkg/anykernel.sh
+          sed -i "s/device.name2=.*/device.name2=starlte/g" anykernel3_pkg/anykernel.sh
+          sed -i "s/device.name3=.*/device.name3=star2lte/g" anykernel3_pkg/anykernel.sh
+          sed -i "s/device.name4=.*/device.name4=crownlte/g" anykernel3_pkg/anykernel.sh
+          sed -i 's/BLOCK=.*/BLOCK=\/dev\/block\/platform\/11120000.ufs\/by-name\/boot;/g' anykernel3_pkg/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=0;/g' anykernel3_pkg/anykernel.sh
+
+          cd anykernel3_pkg
+          zip -r9 ../anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip * -x .git README.md *placeholder
+          cd ..
+          echo "AnyKernel3 package created: anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip"
 
       - name: Upload AnyKernel3 flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
-          path: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs-greenfix.zip
+          name: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs-greenfix
+          path: anykernel3-*-pe12-ksu-susfs-greenfix.zip
+          retention-days: 14
 
       - name: Upload Raw Image-dtb
         uses: actions/upload-artifact@v4
         with:
           name: Image-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
-          path: Image-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
+          path: kernel_src/out/arch/arm64/boot/Image-dtb
+          retention-days: 14
