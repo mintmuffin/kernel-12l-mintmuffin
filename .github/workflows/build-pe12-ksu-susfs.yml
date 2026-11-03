@@ -1,0 +1,175 @@
+name: Build Official PE12 Kernel with Green Screen Fix, KernelSU & SUSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target device'
+        required: true
+        default: 'starlte'
+        type: choice
+        options:
+          - starlte      # Galaxy S9    (SM-G960F)
+          - star2lte     # Galaxy S9+   (SM-G965F)
+          - crownlte     # Galaxy Note9 (SM-N960F)
+
+jobs:
+  build:
+    name: Build PE12 Kernel for ${{ github.event.inputs.device || 'starlte' }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev dwarves \
+            gcc-12-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            python3 make git curl unzip tar cpio lz4 \
+            libncurses-dev device-tree-compiler patch
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-12    /usr/local/bin/aarch64-linux-gnu-gcc
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-12    /usr/local/bin/aarch64-linux-gnu-g++
+          aarch64-linux-gnu-gcc --version
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      - name: Clone official PixelExperience 12 kernel tree
+        run: |
+          git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
+
+      - name: Integrate KernelSU
+        run: |
+          cd kernel_src
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          echo "KernelSU integrated successfully!"
+
+      - name: Integrate SUSFS into Kernel & KernelSU
+        run: |
+          cd kernel_src
+          # Copy susfs source files
+          cp ../susfs_patches/susfs.c fs/
+          cp ../susfs_patches/sus_su.c fs/
+          cp ../susfs_patches/susfs.h include/linux/
+          cp ../susfs_patches/susfs_def.h include/linux/
+          cp ../susfs_patches/sus_su.h include/linux/
+
+          # Apply SUSFS kernel patch
+          patch -p1 --fuzz=3 < ../susfs_patches/50_add_susfs_in_kernel-4.9.patch || true
+          echo "Applied SUSFS kernel patch!"
+
+          # Apply SUSFS KernelSU patch
+          cd KernelSU
+          patch -p1 --fuzz=3 < ../../susfs_patches/10_enable_susfs_for_ksu.patch || true
+          cd ..
+          echo "Applied SUSFS KernelSU patch!"
+
+      - name: Apply Green Screen ALPM Fix
+        run: |
+          cd kernel_src
+          git apply --verbose ../green_screen_fix.patch
+          echo "Green screen fix patch applied successfully!"
+
+      - name: Fix GCC 12 float incompatibility in DPU driver
+        run: |
+          cd kernel_src
+          sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
+          echo "Fixed decon_reg.c for GCC 12!"
+
+      - name: Clean Makefiles of -Werror for GCC 12 compatibility
+        run: |
+          cd kernel_src
+          python3 - <<'PYEOF'
+          import os, re
+          count = 0
+          for root, dirs, files in os.walk('.'):
+              for f in files:
+                  if f.startswith('Makefile') or f.startswith('Kbuild') or f.endswith('.mk'):
+                      path = os.path.join(root, f)
+                      try:
+                          with open(path, 'r', errors='ignore') as fp:
+                              content = fp.read()
+                          if '-Werror' in content:
+                              new_content = re.sub(r'-Werror[=a-zA-Z0-9_-]*', '', content)
+                              with open(path, 'w') as fp:
+                                  fp.write(new_content)
+                              count += 1
+                      except Exception:
+                          pass
+          print(f"Stripped -Werror from {count} Makefiles!")
+          PYEOF
+
+      - name: Configure Kernel with SUSFS & Stock Clocks
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          DEFCONFIG="exynos9810-${DEVICE}_defconfig"
+          cd kernel_src
+
+          sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-mintmuffin-mafushii"/g' arch/arm64/configs/$DEFCONFIG
+          cat << 'EOF' >> arch/arm64/configs/$DEFCONFIG
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
+          EOF
+
+          mkdir -p out
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out $DEFCONFIG
+
+      - name: Compile Kernel
+        run: |
+          JOBS=$(nproc)
+          cd kernel_src
+
+          EXTRA_KCFLAGS="-Wno-error -Wno-format -Wno-error=format \
+            -Wno-address -Wno-nonnull \
+            -Wno-implicit-fallthrough -Wno-unused-const-variable \
+            -Wno-maybe-uninitialized -Wno-array-bounds -Wno-stringop-overflow \
+            -Wno-misleading-indentation -Wno-missing-attributes \
+            -Wno-packed-not-aligned -Wno-restrict -Wno-format-overflow \
+            -Wno-enum-conversion -fno-pie"
+
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out KCFLAGS="$EXTRA_KCFLAGS" -j${JOBS} Image dtbs
+          echo "Kernel compiled successfully!"
+
+      - name: Package AnyKernel3 flashable zip & boot.img
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
+          cd AK3
+          rm -rf .git
+          sed -i "s/device.name1=.*/device.name1=${DEVICE}/" anykernel.sh
+          sed -i "s/device.name2=.*/device.name2=universal9810/" anykernel.sh
+          sed -i 's/kernel.string=.*/kernel.string=PE12 mintmuffin-mafushii Kernel (GreenFix+KSU+SUSFS)/' anykernel.sh
+          cp ../kernel_src/out/arch/arm64/boot/Image .
+          find ../kernel_src/out/arch/arm64/boot/dts/exynos/ -name "*.dtb" -exec cp {} . \;
+          zip -r9 ../anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip *
+          cd ..
+
+          # Also create raw Image
+          cp kernel_src/out/arch/arm64/boot/Image Image-${DEVICE}-pe12-ksu-susfs
+
+      - name: Upload AnyKernel3 flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
+          path: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs-greenfix.zip
+
+      - name: Upload Raw Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
+          path: Image-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
