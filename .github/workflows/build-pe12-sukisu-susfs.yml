@@ -39,14 +39,142 @@ jobs:
         run: |
           git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
 
-      - name: Integrate SukiSU-Ultra
+      - name: Integrate SukiSU-Ultra with PE12 Manual Hooks
         run: |
           cd kernel_src
           git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
 
-          # Apply non-GKI 4.9 syscall hooks
-          patch -p1 --fuzz=3 < ../sukisu_patches/sukisu_4.9_hooks.patch || true
-          echo "Applied SukiSU 4.9 manual hooks patch!"
+          # Apply exact non-GKI hooks via Python
+          python3 - <<'PYEOF'
+          # 1. fs/exec.c
+          with open('fs/exec.c', 'r') as f:
+              c = f.read()
+          exec_decl = '''
+#ifdef CONFIG_KSU
+static bool ksu_execveat_hook __read_mostly = false;
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+#endif
+'''
+          if 'ksu_execveat_hook' not in c:
+              c = c.replace('int do_execve(struct filename *filename,', exec_decl + '
+int do_execve(struct filename *filename,')
+              c = c.replace(
+                  'struct user_arg_ptr envp = { .ptr.native = __envp };
+	return do_execveat_common',
+                  'struct user_arg_ptr envp = { .ptr.native = __envp };
+#ifdef CONFIG_KSU
+	if (unlikely(ksu_execveat_hook))
+		ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
+	else
+		ksu_handle_execveat_sucompat((int *)AT_FDCWD, &filename, NULL, NULL, NULL);
+#endif
+	return do_execveat_common'
+              )
+              c = c.replace(
+                  '.ptr.compat = __envp,
+	};
+	return do_execveat_common',
+                  '.ptr.compat = __envp,
+	};
+#ifdef CONFIG_KSU
+	if (!ksu_execveat_hook)
+		ksu_handle_execveat_sucompat((int *)AT_FDCWD, &filename, NULL, NULL, NULL);
+#endif
+	return do_execveat_common'
+              )
+              with open('fs/exec.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/exec.c successfully!")
+
+          # 2. drivers/input/input.c
+          with open('drivers/input/input.c', 'r') as f:
+              c = f.read()
+          if 'ksu_input_hook' not in c:
+              c = c.replace(
+                  'void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{',
+                  '#ifdef CONFIG_KSU
+extern bool ksu_input_hook __read_mostly;
+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+#endif
+void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+#ifdef CONFIG_KSU
+	if (unlikely(ksu_input_hook))
+		ksu_handle_input_handle_event(&type, &code, &value);
+#endif'
+              )
+              with open('drivers/input/input.c', 'w') as f:
+                  f.write(c)
+              print("Patched drivers/input/input.c successfully!")
+
+          # 3. drivers/tty/pty.c
+          with open('drivers/tty/pty.c', 'r') as f:
+              c = f.read()
+          if 'ksu_handle_devpts' not in c:
+              c = c.replace(
+                  'static struct tty_struct *pts_unix98_lookup(struct tty_driver *driver,
+		struct file *file, int idx)
+{',
+                  '#ifdef CONFIG_KSU
+extern int ksu_handle_devpts(struct inode*);
+#endif
+static struct tty_struct *pts_unix98_lookup(struct tty_driver *driver,
+		struct file *file, int idx)
+{
+#ifdef CONFIG_KSU
+	ksu_handle_devpts(file->f_path.dentry->d_inode);
+#endif'
+              )
+              with open('drivers/tty/pty.c', 'w') as f:
+                  f.write(c)
+              print("Patched drivers/tty/pty.c successfully!")
+
+          # 4. fs/open.c
+          with open('fs/open.c', 'r') as f:
+              c = f.read()
+          if 'ksu_handle_faccessat' not in c:
+              c = c.replace(
+                  'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{',
+                  '#ifdef CONFIG_KSU
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
+#endif
+SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{
+#ifdef CONFIG_KSU
+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif'
+              )
+              with open('fs/open.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/open.c successfully!")
+
+          # 5. fs/stat.c
+          with open('fs/stat.c', 'r') as f:
+              c = f.read()
+          if 'ksu_handle_stat' not in c:
+              c = c.replace(
+                  'SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
+		struct stat __user *, statbuf, int, flag)
+{',
+                  '#ifdef CONFIG_KSU
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+#endif
+SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
+		struct stat __user *, statbuf, int, flag)
+{
+#ifdef CONFIG_KSU
+	ksu_handle_stat(&dfd, &filename, &flag);
+#endif'
+              )
+              with open('fs/stat.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/stat.c successfully!")
+          PYEOF
 
           # Allow KSU without depending strictly on KPROBES
           sed -i 's/depends on KPROBES && EXT4_FS/depends on EXT4_FS/g' KernelSU/kernel/Kconfig
