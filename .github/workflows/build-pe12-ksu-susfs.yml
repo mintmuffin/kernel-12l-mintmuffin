@@ -39,13 +39,47 @@ jobs:
         run: |
           git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
 
-      - name: Integrate KernelSU
+      - name: Integrate KernelSU (xxksu with non-GKI hook engine)
         run: |
           cd kernel_src
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-          echo "KernelSU integrated successfully!"
+          git clone --depth=1 --branch xxksu-susfs https://github.com/gavdoc38/KernelSU.git KernelSU
+          
+          # Patch KernelSU to support KernelSU Next manager APK (com.rifsxd.ksunext)
+          python3 - <<'PYEOF'
+          # Patch throne_tracker.c
+          with open('KernelSU/kernel/manager/throne_tracker.c', 'r') as f:
+              c = f.read()
+          if 'com.rifsxd.ksunext' not in c:
+              c = c.replace(
+                  '#define is_midorisu_apk(tgt) extra_manager_apk(tgt, "com.midori.supermanager")',
+                  '#define is_midorisu_apk(tgt) extra_manager_apk(tgt, "com.midori.supermanager")\n#define is_ksunext_apk(tgt) extra_manager_apk(tgt, "com.rifsxd.ksunext")'
+              )
+              c = c.replace(
+                  '#define test_extra_pkgs(tgt) (is_kowsu_apk(tgt) || is_midorisu_apk(tgt))',
+                  '#define test_extra_pkgs(tgt) (is_kowsu_apk(tgt) || is_midorisu_apk(tgt) || is_ksunext_apk(tgt))'
+              )
+              with open('KernelSU/kernel/manager/throne_tracker.c', 'w') as f:
+                  f.write(c)
 
-      - name: Integrate SUSFS into Kernel & KernelSU
+          # Patch apk_sign.c to accept KernelSU Next signature
+          with open('KernelSU/kernel/manager/apk_sign.c', 'r') as f:
+              c = f.read()
+          if '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7' not in c:
+              target = 'bool is_manager_apk(char *path)\n{'
+              replacement = 'bool is_manager_apk(char *path)\n{\n\t// KernelSU Next (rifsxd release)\n\tif (check_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"))\n\t\treturn true;\n'
+              c = c.replace(target, replacement)
+              with open('KernelSU/kernel/manager/apk_sign.c', 'w') as f:
+                  f.write(c)
+          print("Patched KernelSU manager identity for KernelSU-Next!")
+          PYEOF
+
+          # Copy KernelSU/kernel into drivers/kernelsu
+          cp -r KernelSU/kernel drivers/kernelsu
+          grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+          grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          echo "KernelSU integrated into drivers/kernelsu successfully!"
+
+      - name: Integrate SUSFS into Kernel
         run: |
           cd kernel_src
           # Copy susfs source files
@@ -58,12 +92,6 @@ jobs:
           # Apply SUSFS kernel patch
           patch -p1 --fuzz=3 < ../susfs_patches/50_add_susfs_in_kernel-4.9.patch || true
           echo "Applied SUSFS kernel patch!"
-
-          # Apply SUSFS KernelSU patch
-          cd KernelSU
-          patch -p1 --fuzz=3 < ../../susfs_patches/10_enable_susfs_for_ksu.patch || true
-          cd ..
-          echo "Applied SUSFS KernelSU patch!"
 
       - name: Apply Green Screen ALPM Fix
         run: |
@@ -100,7 +128,7 @@ jobs:
           print(f"Stripped -Werror from {count} Makefiles!")
           PYEOF
 
-      - name: Configure Kernel with SUSFS & Stock Clocks
+      - name: Configure Kernel with SUSFS, KernelSU & Stock Clocks
         run: |
           DEVICE="${{ github.event.inputs.device || 'starlte' }}"
           DEFCONFIG="exynos9810-${DEVICE}_defconfig"
@@ -108,26 +136,30 @@ jobs:
 
           sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-mintmuffin-mafushii"/g' arch/arm64/configs/$DEFCONFIG
           cat << 'EOF' >> arch/arm64/configs/$DEFCONFIG
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
           CONFIG_KSU_SUSFS_TRY_UMOUNT=y
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_MEMFD=y
           CONFIG_KSU_SUSFS_SUS_SU=y
           EOF
 
           mkdir -p out
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out $DEFCONFIG
+
+          # Verify KSU and SUSFS are preserved in .config
+          echo "=== Checking .config for KSU and SUSFS ==="
+          grep -E 'CONFIG_KSU|CONFIG_KALLSYMS' out/.config
 
       - name: Compile Kernel
         run: |
@@ -145,7 +177,28 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out KCFLAGS="$EXTRA_KCFLAGS" -j${JOBS} Image dtbs
           echo "Kernel compiled successfully!"
 
-      - name: Package AnyKernel3 flashable zip & boot.img
+          # Verify that KernelSU and SUSFS compiled into objects
+          echo "=== Verifying compilation artifacts ==="
+          ls -la out/drivers/kernelsu/
+          ls -la out/fs/susfs.o
+
+      - name: Append DTB to Image
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          DTB_DIR="kernel_src/out/arch/arm64/boot/dts/exynos"
+          IMAGE="kernel_src/out/arch/arm64/boot/Image"
+          OUT_IMAGE="kernel_src/out/arch/arm64/boot/Image-dtb"
+
+          cat "$IMAGE" > "$OUT_IMAGE"
+          for dtb in "$DTB_DIR"/exynos9810-${DEVICE}*.dtb; do
+            if [ -f "$dtb" ]; then
+              cat "$dtb" >> "$OUT_IMAGE"
+              echo "Appended $dtb"
+            fi
+          done
+          ls -lh "$OUT_IMAGE"
+
+      - name: Package AnyKernel3 flashable zip
         run: |
           DEVICE="${{ github.event.inputs.device || 'starlte' }}"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
@@ -154,13 +207,13 @@ jobs:
           sed -i "s/device.name1=.*/device.name1=${DEVICE}/" anykernel.sh
           sed -i "s/device.name2=.*/device.name2=universal9810/" anykernel.sh
           sed -i 's/kernel.string=.*/kernel.string=PE12 mintmuffin-mafushii Kernel (GreenFix+KSU+SUSFS)/' anykernel.sh
-          cp ../kernel_src/out/arch/arm64/boot/Image .
+          cp ../kernel_src/out/arch/arm64/boot/Image-dtb Image
           find ../kernel_src/out/arch/arm64/boot/dts/exynos/ -name "*.dtb" -exec cp {} . \;
           zip -r9 ../anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip *
           cd ..
 
-          # Also create raw Image
-          cp kernel_src/out/arch/arm64/boot/Image Image-${DEVICE}-pe12-ksu-susfs
+          # Also create raw Image-dtb artifact
+          cp kernel_src/out/arch/arm64/boot/Image-dtb Image-${DEVICE}-pe12-ksu-susfs
 
       - name: Upload AnyKernel3 flashable zip
         uses: actions/upload-artifact@v4
@@ -168,7 +221,7 @@ jobs:
           name: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
           path: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs-greenfix.zip
 
-      - name: Upload Raw Image
+      - name: Upload Raw Image-dtb
         uses: actions/upload-artifact@v4
         with:
           name: Image-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
