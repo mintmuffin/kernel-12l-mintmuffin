@@ -313,10 +313,10 @@ index 05d6d4b..03400f9 100644
  	return filp;
  }
 diff --git a/fs/namespace.c b/fs/namespace.c
-index e96c560..5d7e9cf 100644
+index e96c560..0e04636 100644
 --- a/fs/namespace.c
 +++ b/fs/namespace.c
-@@ -1,4181 +1,4229 @@
+@@ -1,4181 +1,4248 @@
 -/*
 - *  linux/fs/namespace.c
 - *
@@ -8019,6 +8019,10 @@ index e96c560..5d7e9cf 100644
 +	struct mount *old;
 +	struct mount *new;
 +	int copy_flags;
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++	bool is_zygote_pid = susfs_is_current_zygote_domain();
++	int last_entry_mnt_id = 0;
++#endif
 +
 +	BUG_ON(!ns);
 +
@@ -8102,6 +8106,21 @@ index e96c560..5d7e9cf 100644
 +#endif
 +			p = next_mnt(p, old);
 +	}
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++	if (is_zygote_pid) {
++		last_entry_mnt_id = list_first_entry(&new_ns->list, struct mount, mnt_list)->mnt_id;
++		list_for_each_entry(q, &new_ns->list, mnt_list) {
++			if (unlikely(q->mnt_id >= DEFAULT_SUS_MNT_ID)) {
++#ifdef CONFIG_RKP_NS_PROT
++				q->mnt->susfs_mnt_id_backup = q->mnt_id;
++#else
++				q->mnt.susfs_mnt_id_backup = q->mnt_id;
++#endif
++				q->mnt_id = last_entry_mnt_id;
++			}
++		}
++	}
++#endif
 +	namespace_unlock();
 +
 +	if (rootmnt)
