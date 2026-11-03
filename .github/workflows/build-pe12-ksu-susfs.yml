@@ -102,21 +102,14 @@ jobs:
           				 void *argv, void *envp, int *flags);
           #endif
           """
-          exec_hook = """#ifdef CONFIG_KSU
-          	if (unlikely(ksu_execveat_hook))
-          		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-          	else
-          		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-          #endif
-          """
+          exec_target = 'static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n\tchar *pathbuf = NULL;'
+          exec_replacement = exec_decl + 'static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\tchar *pathbuf = NULL;'
           if 'ksu_execveat_hook' not in c:
-              target_fn = 'static int do_execveat_common(int fd, struct filename *filename,'
-              c = c.replace(target_fn, exec_decl + target_fn)
-              target_body = '	char *pathbuf = NULL;'
-              c = c.replace(target_body, exec_hook + target_body)
+              assert exec_target in c, "exec_target not found in fs/exec.c!"
+              c = c.replace(exec_target, exec_replacement)
               with open('fs/exec.c', 'w') as f:
                   f.write(c)
-              print("Patched fs/exec.c")
+              print("Patched fs/exec.c cleanly!")
 
           # 2. fs/open.c
           with open('fs/open.c', 'r') as f:
@@ -126,18 +119,14 @@ jobs:
           			        int *flags);
           #endif
           """
-          open_hook = """#ifdef CONFIG_KSU
-          	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-          #endif
-          """
+          open_target = 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n\tconst struct cred *old_cred;'
+          open_replacement = open_decl + 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n\tconst struct cred *old_cred;'
           if 'ksu_handle_faccessat' not in c:
-              target_fn = 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)'
-              c = c.replace(target_fn, open_decl + target_fn)
-              target_body = '	unsigned int lookup_flags = LOOKUP_FOLLOW;'
-              c = c.replace(target_body, target_body + '\n' + open_hook)
+              assert open_target in c, "open_target not found in fs/open.c!"
+              c = c.replace(open_target, open_replacement)
               with open('fs/open.c', 'w') as f:
                   f.write(c)
-              print("Patched fs/open.c")
+              print("Patched fs/open.c cleanly!")
 
           # 3. fs/read_write.c
           with open('fs/read_write.c', 'r') as f:
@@ -148,19 +137,14 @@ jobs:
           			size_t *count_ptr, loff_t **pos);
           #endif
           """
-          rw_hook = """#ifdef CONFIG_KSU
-          	if (unlikely(ksu_vfs_read_hook))
-          		ksu_handle_vfs_read(&file, &buf, &count, &pos);
-          #endif
-          """
+          rw_target = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;'
+          rw_replacement = rw_decl + 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n\tssize_t ret;'
           if 'ksu_handle_vfs_read' not in c:
-              target_fn = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)'
-              c = c.replace(target_fn, rw_decl + target_fn)
-              target_body = '	ssize_t ret;'
-              c = c.replace(target_body, target_body + '\n' + rw_hook)
+              assert rw_target in c, "rw_target not found in fs/read_write.c!"
+              c = c.replace(rw_target, rw_replacement)
               with open('fs/read_write.c', 'w') as f:
                   f.write(c)
-              print("Patched fs/read_write.c")
+              print("Patched fs/read_write.c cleanly!")
 
           # 4. fs/stat.c
           with open('fs/stat.c', 'r') as f:
@@ -169,18 +153,14 @@ jobs:
           extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
           #endif
           """
-          stat_hook = """#ifdef CONFIG_KSU
-          	ksu_handle_stat(&dfd, &filename, &flag);
-          #endif
-          """
+          stat_target = 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\t\tint flag)\n{\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
+          stat_replacement = stat_decl + 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\t\tint flag)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
           if 'ksu_handle_stat' not in c:
-              target_fn = 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,'
-              c = c.replace(target_fn, stat_decl + target_fn)
-              target_body = '	unsigned int lookup_flags = 0;'
-              c = c.replace(target_body, target_body + '\n' + stat_hook)
+              assert stat_target in c, "stat_target not found in fs/stat.c!"
+              c = c.replace(stat_target, stat_replacement)
               with open('fs/stat.c', 'w') as f:
                   f.write(c)
-              print("Patched fs/stat.c")
+              print("Patched fs/stat.c cleanly!")
 
           # 5. drivers/input/input.c
           with open('drivers/input/input.c', 'r') as f:
@@ -190,19 +170,14 @@ jobs:
           extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
           #endif
           """
-          input_hook = """#ifdef CONFIG_KSU
-          	if (unlikely(ksu_input_hook))
-          		ksu_handle_input_handle_event(&type, &code, &value);
-          #endif
-          """
+          input_target = 'static void input_handle_event(struct input_dev *dev,\n\t\t\t       unsigned int type, unsigned int code, int value)\n{\n\tint disposition = input_get_disposition(dev, type, code, &value);'
+          input_replacement = input_decl + 'static void input_handle_event(struct input_dev *dev,\n\t\t\t       unsigned int type, unsigned int code, int value)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n\tint disposition = input_get_disposition(dev, type, code, &value);'
           if 'ksu_handle_input_handle_event' not in c:
-              target_fn = 'static void input_handle_event(struct input_dev *dev,'
-              c = c.replace(target_fn, input_decl + target_fn)
-              target_body = '	int disposition = input_get_disposition(dev, type, code, &value);'
-              c = c.replace(target_body, target_body + '\n' + input_hook)
+              assert input_target in c, "input_target not found in drivers/input/input.c!"
+              c = c.replace(input_target, input_replacement)
               with open('drivers/input/input.c', 'w') as f:
                   f.write(c)
-              print("Patched drivers/input/input.c")
+              print("Patched drivers/input/input.c cleanly!")
           PYEOF
           echo "All non-GKI manual hooks applied successfully!"
 
