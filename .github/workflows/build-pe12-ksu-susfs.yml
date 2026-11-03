@@ -84,10 +84,8 @@ jobs:
           cd kernel_src
           # Copy susfs source files
           cp ../susfs_patches/susfs.c fs/
-          cp ../susfs_patches/sus_su.c fs/
           cp ../susfs_patches/susfs.h include/linux/
           cp ../susfs_patches/susfs_def.h include/linux/
-          cp ../susfs_patches/sus_su.h include/linux/
 
           # Apply SUSFS kernel patch
           patch -p1 --fuzz=3 < ../susfs_patches/50_add_susfs_in_kernel-4.9.patch || true
