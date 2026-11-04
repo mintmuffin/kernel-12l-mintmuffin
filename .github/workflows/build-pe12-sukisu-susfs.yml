@@ -12,6 +12,9 @@ on:
           - starlte      # Galaxy S9    (SM-G960F)
           - star2lte     # Galaxy S9+   (SM-G965F)
           - crownlte     # Galaxy Note9 (SM-N960F)
+  push:
+    paths:
+      - '.github/workflows/build-pe12-sukisu-susfs.yml'
 
 jobs:
   build:
