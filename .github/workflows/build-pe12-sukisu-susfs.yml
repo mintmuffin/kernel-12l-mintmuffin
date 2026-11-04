@@ -63,50 +63,71 @@ jobs:
           echo '#include <linux/sched.h>' > include/linux/sched/task.h
           echo '#include <linux/sched.h>' > include/linux/sched/signal.h
           echo '#include <linux/sched.h>' > include/linux/sched/user.h
-
+          
           # Linux 4.9 compatibility fixes for SukiSU-Ultra
           sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
           
-          # Universal compatibility definitions in drivers/kernelsu/include/arch.h and hook/patch_memory.h
-          python3 - <<'PYEOF'
-          arch_extra = '''
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-typedef pgd_t p4d_t;
-#ifndef p4d_offset
-#define p4d_offset(pgd, addr) (pgd)
-#define p4d_none(p4d) 0
-#define p4d_bad(p4d) 0
-#endif
-#ifndef __pte_to_phys
-#define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
-#endif
-#ifndef __pmd_to_phys
-#define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
-#endif
-#ifndef __pud_to_phys
-#define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
-#endif
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
-#ifndef copy_to_kernel_nofault
-#define copy_to_kernel_nofault probe_kernel_write
-#endif
-#ifndef copy_from_kernel_nofault
-#define copy_from_kernel_nofault probe_kernel_read
-#endif
-#endif
-#ifndef MODULE_IMPORT_NS
-#define MODULE_IMPORT_NS(ns)
-#endif
-'''
-          with open('drivers/kernelsu/include/arch.h', 'a') as f:
-              f.write(arch_extra)
-          with open('drivers/kernelsu/hook/patch_memory.h', 'a') as f:
-              f.write(arch_extra)
-          print("Appended Linux 4.9 compatibility wrappers cleanly!")
-          PYEOF
-
+          cat << 'COMEOF' >> drivers/kernelsu/include/arch.h
+          #include <linux/version.h>
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+          typedef pgd_t p4d_t;
+          #ifndef p4d_offset
+          #define p4d_offset(pgd, addr) (pgd)
+          #define p4d_none(p4d) 0
+          #define p4d_bad(p4d) 0
+          #endif
+          #ifndef __pte_to_phys
+          #define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
+          #endif
+          #ifndef __pmd_to_phys
+          #define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
+          #endif
+          #ifndef __pud_to_phys
+          #define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
+          #endif
+          #endif
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+          #ifndef copy_to_kernel_nofault
+          #define copy_to_kernel_nofault probe_kernel_write
+          #endif
+          #ifndef copy_from_kernel_nofault
+          #define copy_from_kernel_nofault probe_kernel_read
+          #endif
+          #endif
+          #ifndef MODULE_IMPORT_NS
+          #define MODULE_IMPORT_NS(ns)
+          #endif
+          COMEOF
+          
+          cat << 'COMEOF2' >> drivers/kernelsu/hook/patch_memory.h
+          #include <linux/version.h>
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+          typedef pgd_t p4d_t;
+          #ifndef p4d_offset
+          #define p4d_offset(pgd, addr) (pgd)
+          #define p4d_none(p4d) 0
+          #define p4d_bad(p4d) 0
+          #endif
+          #ifndef __pte_to_phys
+          #define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
+          #endif
+          #ifndef __pmd_to_phys
+          #define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
+          #endif
+          #ifndef __pud_to_phys
+          #define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
+          #endif
+          #endif
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+          #ifndef copy_to_kernel_nofault
+          #define copy_to_kernel_nofault probe_kernel_write
+          #endif
+          #ifndef copy_from_kernel_nofault
+          #define copy_from_kernel_nofault probe_kernel_read
+          #endif
+          #endif
+          COMEOF2
+          
           echo "SukiSU integrated into drivers/kernelsu successfully!"
       - name: Integrate SUSFS into Kernel
         run: |
@@ -129,9 +150,9 @@ typedef pgd_t p4d_t;
           exec_decl = """#ifdef CONFIG_KSU
           extern bool ksu_execveat_hook __read_mostly;
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-                      void *envp, int *flags);
+          			void *envp, int *flags);
           extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-                           void *argv, void *envp, int *flags);
+          				 void *argv, void *envp, int *flags);
           #endif
           """
           exec_target = 'static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n\tchar *pathbuf = NULL;'
@@ -148,7 +169,7 @@ typedef pgd_t p4d_t;
               c = f.read()
           open_decl = """#ifdef CONFIG_KSU
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-                              int *flags);
+          			        int *flags);
           #endif
           """
           open_target = 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n\tconst struct cred *old_cred;'
@@ -166,7 +187,7 @@ typedef pgd_t p4d_t;
           rw_decl = """#ifdef CONFIG_KSU
           extern bool ksu_vfs_read_hook __read_mostly;
           extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-                      size_t *count_ptr, loff_t **pos);
+          			size_t *count_ptr, loff_t **pos);
           #endif
           """
           rw_target = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;'
@@ -365,13 +386,11 @@ typedef pgd_t p4d_t;
           cd ..
 
       - name: Package Standalone boot.img and Odin TAR
-        env:
-          DEVICE: ${{ github.event.inputs.device || 'starlte' }}
         run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
           python3 - <<'PYEOF'
           import struct, os, tarfile
 
-          device = os.environ.get('DEVICE', 'starlte')
           with open('kernel_src/out/arch/arm64/boot/Image', 'rb') as f:
               k_data = f.read()
           with open('kernel_src/dt.img', 'rb') as f:
@@ -397,7 +416,7 @@ typedef pgd_t p4d_t;
               rem = len(data) % align
               return data + b'\x00' * (align - rem) if rem else data
 
-          out_boot = f"boot_{device}_pe12_sukisu_susfs.img"
+          out_boot = f"boot_{os.environ.get('DEVICE', 'starlte')}_pe12_sukisu_susfs.img"
           with open(out_boot, 'wb') as f:
               f.write(hdr)
               f.write(pad(k_data, page_size))
@@ -406,7 +425,7 @@ typedef pgd_t p4d_t;
 
           print(f"Created standalone boot.img: {os.path.getsize(out_boot)} bytes")
 
-          out_tar = f"boot-{device}-pe12-sukisu-susfs-ODIN.tar"
+          out_tar = f"boot-{os.environ.get('DEVICE', 'starlte')}-pe12-sukisu-susfs-ODIN.tar"
           with tarfile.open(out_tar, 'w') as tar:
               tar.add(out_boot, arcname='boot.img')
           print(f"Created Odin TAR: {os.path.getsize(out_tar)} bytes")
