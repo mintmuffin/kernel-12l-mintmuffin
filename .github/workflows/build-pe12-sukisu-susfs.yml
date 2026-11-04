@@ -58,6 +58,9 @@ jobs:
           # Linux 4.9 compatibility fixes for SukiSU-Ultra
           sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
           
+          # Replace linux/compiler_types.h (4.14+) with linux/compiler.h for Linux 4.9
+          find drivers/kernelsu/ -type f -exec sed -i 's|<linux/compiler_types.h>|<linux/compiler.h>|g' {} +
+          
           printf "\n#include <linux/version.h>\n#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)\ntypedef pgd_t p4d_t;\n#define p4d_offset(pgd, addr) (pgd)\n#define p4d_none(p4d) 0\n#define p4d_bad(p4d) 0\n#define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)\n#define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)\n#define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)\n#endif\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)\n#define copy_to_kernel_nofault probe_kernel_write\n#endif\n" >> drivers/kernelsu/hook/patch_memory.h
 
           echo "SukiSU integrated into drivers/kernelsu successfully!"
