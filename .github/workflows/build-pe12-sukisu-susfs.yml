@@ -128,6 +128,25 @@ jobs:
           #endif
           COMEOF2
           
+          # Linux 4.9 compatibility for lsm_hook.c (struct security_hook_heads is not hlist in 4.9)
+          cat << 'LSMSTUB' > lsm_stub.txt
+          #include <linux/version.h>
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
+          #include "lsm_hook.h"
+          #include <linux/errno.h>
+          int ksu_lsm_hook(struct ksu_lsm_hook *hook) { return -EOPNOTSUPP; }
+          void ksu_lsm_unhook(struct ksu_lsm_hook *hook) {}
+          int ksu_register_lsm_hook(struct ksu_lsm_hook *hook) { return -EOPNOTSUPP; }
+          void ksu_unregister_lsm_hook(struct ksu_lsm_hook *hook) {}
+          void __init ksu_lsm_hook_init(void) {}
+          void __exit ksu_lsm_hook_exit(void) {}
+          #else
+          LSMSTUB
+          cat lsm_stub.txt drivers/kernelsu/hook/lsm_hook.c > drivers/kernelsu/hook/lsm_hook_new.c
+          echo "#endif" >> drivers/kernelsu/hook/lsm_hook_new.c
+          mv drivers/kernelsu/hook/lsm_hook_new.c drivers/kernelsu/hook/lsm_hook.c
+          rm -f lsm_stub.txt
+
           echo "SukiSU integrated into drivers/kernelsu successfully!"
       - name: Integrate SUSFS into Kernel
         run: |
