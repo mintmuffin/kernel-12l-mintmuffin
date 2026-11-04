@@ -12,9 +12,6 @@ on:
           - starlte      # Galaxy S9    (SM-G960F)
           - star2lte     # Galaxy S9+   (SM-G965F)
           - crownlte     # Galaxy Note9 (SM-N960F)
-  push:
-    paths:
-      - '.github/workflows/build-pe12-sukisu-susfs.yml'
 
 jobs:
   build:
@@ -61,24 +58,9 @@ jobs:
           # Linux 4.9 compatibility fixes for SukiSU-Ultra
           sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
           
-          cat >> drivers/kernelsu/hook/patch_memory.h << 'PMEOF'
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-typedef pgd_t p4d_t;
-#define p4d_offset(pgd, addr) (pgd)
-#define p4d_none(p4d) 0
-#define p4d_bad(p4d) 0
-#define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
-#define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
-#define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
-#define copy_to_kernel_nofault probe_kernel_write
-#endif
-PMEOF
+          printf "\n#include <linux/version.h>\n#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)\ntypedef pgd_t p4d_t;\n#define p4d_offset(pgd, addr) (pgd)\n#define p4d_none(p4d) 0\n#define p4d_bad(p4d) 0\n#define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)\n#define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)\n#define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)\n#endif\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)\n#define copy_to_kernel_nofault probe_kernel_write\n#endif\n" >> drivers/kernelsu/hook/patch_memory.h
 
           echo "SukiSU integrated into drivers/kernelsu successfully!"
-
       - name: Integrate SUSFS into Kernel
         run: |
           cd kernel_src
@@ -311,7 +293,7 @@ PMEOF
 
           cat > ak3/anykernel.sh <<AKEOF
           # AnyKernel3 Config
-          kernel.string=PixelExperience 12.1 SukiSU + SUSFS + GreenFix
+          kernel.string=PixelExperience 12.1 SukiSU-Ultra + SUSFS + GreenFix
           do.devicecheck=1
           do.modules=0
           do.systemless=1
