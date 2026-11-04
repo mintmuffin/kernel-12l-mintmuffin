@@ -39,42 +39,42 @@ jobs:
         run: |
           git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
 
-      - name: Integrate KernelSU v1.0.3 & SUSFS
+      - name: Integrate SukiSU-Ultra and SUSFS
         run: |
           cd kernel_src
-          git clone --depth=1 --branch v1.0.3 https://github.com/tiann/KernelSU.git KernelSU
-          cd KernelSU
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git SukiSU
           
-          # 1. Revert commit 898e9d4 (restore non-GKI manual hook compatibility)
-          git apply --reverse ../../susfs_patches/revert_898.patch
-          
-          # 2. Apply SUSFS patch for KernelSU
-          git apply ../../susfs_patches/10_enable_susfs_for_ksu.patch
-          
-          # 3. Allow CONFIG_KSU without KPROBES
-          sed -i 's/depends on KPROBES && EXT4_FS/depends on EXT4_FS/g' kernel/Kconfig
-          
-          # 4. Disable kprobes in KernelSU code
-          find kernel/ -type f -exec sed -i 's/#ifdef CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/g' {} +
-          
-          # 5. Add KernelSU Next signature to apk_sign.c (com.rifsxd.ksunext)
-          python3 - <<'PYEOF'
-          with open('kernel/apk_sign.c', 'r') as f:
-              c = f.read()
-          if '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7' not in c:
-              target = 'check_v2_signature(path, 384, "7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4")'
-              replacement = target + ' ||\n\t\tcheck_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7")'
-              c = c.replace(target, replacement)
-              with open('kernel/apk_sign.c', 'w') as f:
-                  f.write(c)
-          print("Added KernelSU Next signature to apk_sign.c!")
-          PYEOF
-          
-          cd ..
-          cp -r KernelSU/kernel drivers/kernelsu
+          # Allow CONFIG_KSU without KPROBES
+          sed -i 's/depends on KPROBES && EXT4_FS/depends on EXT4_FS/g' SukiSU/kernel/Kconfig
+
+          # Copy SukiSU kernel and uapi headers
+          cp -r SukiSU/kernel drivers/kernelsu
+          rm -rf drivers/kernelsu/include/uapi
+          cp -r SukiSU/uapi drivers/kernelsu/include/uapi
+          cp -r SukiSU/uapi drivers/kernelsu/uapi
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          echo "KernelSU integrated into drivers/kernelsu successfully!"
+
+          # Linux 4.9 compatibility fixes for SukiSU-Ultra
+          sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
+          
+          cat >> drivers/kernelsu/hook/patch_memory.h << 'PMEOF'
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+typedef pgd_t p4d_t;
+#define p4d_offset(pgd, addr) (pgd)
+#define p4d_none(p4d) 0
+#define p4d_bad(p4d) 0
+#define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
+#define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
+#define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+#define copy_to_kernel_nofault probe_kernel_write
+#endif
+PMEOF
+
+          echo "SukiSU integrated into drivers/kernelsu successfully!"
 
       - name: Integrate SUSFS into Kernel
         run: |
