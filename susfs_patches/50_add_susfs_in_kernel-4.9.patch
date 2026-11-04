@@ -313,10 +313,10 @@ index 05d6d4b..03400f9 100644
  	return filp;
  }
 diff --git a/fs/namespace.c b/fs/namespace.c
-index e96c560..0e04636 100644
+index e96c560..9746ef1 100644
 --- a/fs/namespace.c
 +++ b/fs/namespace.c
-@@ -1,4181 +1,4248 @@
+@@ -1,4181 +1,4284 @@
 -/*
 - *  linux/fs/namespace.c
 - *
@@ -8746,6 +8746,42 @@ index e96c560..0e04636 100644
 +	.install	= mntns_install,
 +	.owner		= mntns_owner,
 +};
++
++
++#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
++extern void susfs_try_umount_all(uid_t uid);
++void susfs_run_try_umount_for_current_mnt_ns(void) {
++	struct mount *mnt;
++	struct mnt_namespace *mnt_ns;
++
++	mnt_ns = current->nsproxy->mnt_ns;
++	// Lock the namespace
++	namespace_lock();
++	list_for_each_entry(mnt, &mnt_ns->list, mnt_list) {
++		// Change the sus mount to be private
++		if (mnt->mnt_id >= DEFAULT_SUS_MNT_ID) {
++			change_mnt_propagation(mnt, MS_PRIVATE);
++		}
++	}
++	// Unlock the namespace
++	namespace_unlock();
++	susfs_try_umount_all(current_uid().val);
++}
++#endif
++
++#ifdef CONFIG_KSU_SUSFS
++bool susfs_is_mnt_devname_ksu(struct path *path) {
++	struct mount *mnt;
++
++	if (path && path->mnt) {
++		mnt = real_mount(path->mnt);
++		if (mnt && mnt->mnt_devname && !strcmp(mnt->mnt_devname, "KSU")) {
++			return true;
++		}
++	}
++	return false;
++}
++#endif
 diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
 index 317b7e7..a3cc979 100644
 --- a/fs/notify/fdinfo.c
