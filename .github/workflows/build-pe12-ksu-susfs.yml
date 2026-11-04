@@ -256,50 +256,133 @@ jobs:
           cd kernel_src
           make -j$(nproc --all) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out
 
-      - name: Append DTB to Image
+      - name: Build Genuine Samsung DTBH and Image-dtb
         run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
           cd kernel_src
-          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          DTB_PATH="out/arch/arm64/boot/dts/exynos/exynos9810-${DEVICE}.dtb"
-          if [ -f "$DTB_PATH" ]; then
-            cat out/arch/arm64/boot/Image "$DTB_PATH" > out/arch/arm64/boot/Image-dtb
-            echo "Successfully generated Image-dtb with appended device DTB!"
-          else
-            echo "Device DTB not found at $DTB_PATH, finding all generated DTBs..."
-            find out/arch/arm64/boot/dts/ -name "*.dtb"
-            cp out/arch/arm64/boot/Image out/arch/arm64/boot/Image-dtb
-          fi
+          DTB_DIR="out/arch/arm64/boot/dts/exynos"
+          IMAGE="out/arch/arm64/boot/Image"
+          OUT_IMAGE="out/arch/arm64/boot/Image-dtb"
 
-      - name: Package AnyKernel3 flashable zip
+          cat "$IMAGE" > "$OUT_IMAGE"
+          for dtb in "$DTB_DIR"/exynos9810-${DEVICE}*.dtb; do
+            if [ -f "$dtb" ]; then
+              cat "$dtb" >> "$OUT_IMAGE"
+              echo "Appended $dtb"
+            fi
+          done
+
+          python3 - <<PYEOF
+          import struct, os
+          device = "$DEVICE"
+          dtb_path = f"out/arch/arm64/boot/dts/exynos/exynos9810-{device}_eur_open_26.dtb"
+          if not os.path.exists(dtb_path):
+              dtbs = [f for f in os.listdir("out/arch/arm64/boot/dts/exynos") if f.startswith(f"exynos9810-{device}") and f.endswith(".dtb")]
+              dtb_path = os.path.join("out/arch/arm64/boot/dts/exynos", dtbs[0])
+
+          with open(dtb_path, 'rb') as f:
+              new_dtb = f.read()
+
+          page_size = 2048
+          pad_len = (page_size - (len(new_dtb) % page_size)) % page_size
+          padded_dtb = new_dtb + b'\x00' * pad_len
+
+          dtbh_hdr = bytearray(2048)
+          struct.pack_into('<4sIII', dtbh_hdr, 0, b'DTBH', 2, 1, 0x2652)
+          struct.pack_into('<IIIIII', dtbh_hdr, 16, 0x50A6, 0x217584DA, 26, 255, 2048, len(new_dtb))
+          dtbh_hdr[40] = 0x20
+
+          with open('dt.img', 'wb') as f:
+              f.write(dtbh_hdr + padded_dtb)
+          print("Built DTBH image successfully!")
+          PYEOF
+
+      - name: Package AnyKernel3 Zip for TWRP
         run: |
           DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          mkdir -p anykernel3_pkg
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3_pkg/
-          cp kernel_src/out/arch/arm64/boot/Image-dtb anykernel3_pkg/Image
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          cp kernel_src/out/arch/arm64/boot/Image-dtb ak3/
+          cp kernel_src/dt.img ak3/dt.img
+          cp kernel_src/dt.img ak3/dt
+          cp kernel_src/dt.img ak3/boot.img-dt
 
-          # Configure anykernel.sh for Exynos 9810
-          sed -i "s/device.name1=.*/device.name1=${DEVICE}/g" anykernel3_pkg/anykernel.sh
-          sed -i "s/device.name2=.*/device.name2=starlte/g" anykernel3_pkg/anykernel.sh
-          sed -i "s/device.name3=.*/device.name3=star2lte/g" anykernel3_pkg/anykernel.sh
-          sed -i "s/device.name4=.*/device.name4=crownlte/g" anykernel3_pkg/anykernel.sh
-          sed -i 's/BLOCK=.*/BLOCK=\/dev\/block\/platform\/11120000.ufs\/by-name\/boot;/g' anykernel3_pkg/anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=0;/g' anykernel3_pkg/anykernel.sh
+          cat > ak3/anykernel.sh <<AKEOF
+          # AnyKernel3 Config
+          kernel.string=PixelExperience 12.1 KernelSU + SUSFS + GreenFix
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=starlte
+          device.name2=star2lte
+          device.name3=crownlte
+          device.name4=SM-G960F
+          device.name5=SM-G965F
+          block=/dev/block/platform/13500000.ufs/by-name/BOOT;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          . tools/ak3-core.sh
+          split_boot;
+          flash_boot;
+          AKEOF
 
-          cd anykernel3_pkg
-          zip -r9 ../anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip * -x .git README.md *placeholder
+          cd ak3
+          zip -r9 "../anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip" * -x .git README.md *placeholder
           cd ..
-          echo "AnyKernel3 package created: anykernel3-${DEVICE}-pe12-ksu-susfs-greenfix.zip"
 
-      - name: Upload AnyKernel3 flashable zip
+      - name: Package Standalone boot.img and Odin TAR
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          python3 - <<'PYEOF'
+          import struct, os, tarfile
+
+          with open('kernel_src/out/arch/arm64/boot/Image', 'rb') as f:
+              k_data = f.read()
+          with open('kernel_src/dt.img', 'rb') as f:
+              dt_data = f.read()
+          with open('tools/pe12_ramdisk.cpio.gz', 'rb') as f:
+              r_data = f.read()
+
+          page_size = 2048
+          ksize = len(k_data)
+          rsize = len(r_data)
+          dtsize = len(dt_data)
+
+          hdr = bytearray(page_size)
+          struct.pack_into('<8sIIIIIIIIII', hdr, 0,
+                           b'ANDROID!', ksize, 268468224,
+                           rsize, 285212672,
+                           0, 0, 268435712,
+                           page_size, dtsize, 402653547)
+          cmdline = b'buildvariant=userdebug\x00'
+          hdr[64:64+len(cmdline)] = cmdline
+
+          def pad(data, align):
+              rem = len(data) % align
+              return data + b'\x00' * (align - rem) if rem else data
+
+          out_boot = f"boot_{os.environ.get('DEVICE', 'starlte')}_pe12_ksu_susfs.img"
+          with open(out_boot, 'wb') as f:
+              f.write(hdr)
+              f.write(pad(k_data, page_size))
+              f.write(pad(r_data, page_size))
+              f.write(dt_data)
+
+          print(f"Created standalone boot.img: {os.path.getsize(out_boot)} bytes")
+
+          out_tar = f"boot-{os.environ.get('DEVICE', 'starlte')}-pe12-ksu-susfs-ODIN.tar"
+          with tarfile.open(out_tar, 'w') as tar:
+              tar.add(out_boot, arcname='boot.img')
+          print(f"Created Odin TAR: {os.path.getsize(out_tar)} bytes")
+          PYEOF
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: anykernel3-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs-greenfix
-          path: anykernel3-*-pe12-ksu-susfs-greenfix.zip
-          retention-days: 14
-
-      - name: Upload Raw Image-dtb
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image-${{ github.event.inputs.device || 'starlte' }}-pe12-ksu-susfs
-          path: kernel_src/out/arch/arm64/boot/Image-dtb
-          retention-days: 14
+          name: pe12-ksu-susfs-${{ github.event.inputs.device || 'starlte' }}
+          path: |
+            anykernel3-*-pe12-ksu-susfs-greenfix.zip
+            boot_*_pe12_ksu_susfs.img
+            boot-*-pe12-ksu-susfs-ODIN.tar
