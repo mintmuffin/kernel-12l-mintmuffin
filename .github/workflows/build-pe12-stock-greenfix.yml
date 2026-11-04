@@ -49,6 +49,12 @@ jobs:
           fi
           echo "Green screen fix applied successfully!"
 
+      - name: Fix GCC 12 float incompatibility in DPU driver
+        run: |
+          cd kernel_src
+          sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
+          echo "Fixed decon_reg.c for GCC 12!"
+
       - name: Clean Makefiles of -Werror
         run: |
           cd kernel_src
