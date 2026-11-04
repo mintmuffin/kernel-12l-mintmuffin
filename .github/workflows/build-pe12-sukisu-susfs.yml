@@ -69,6 +69,9 @@ jobs:
           
           cat << 'COMEOF' >> drivers/kernelsu/include/arch.h
           #include <linux/version.h>
+          #include <linux/mm_types.h>
+          #include <asm/pgtable.h>
+          #include <asm/pgtable-types.h>
           #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
           typedef pgd_t p4d_t;
           #ifndef p4d_offset
@@ -101,6 +104,9 @@ jobs:
           
           cat << 'COMEOF2' >> drivers/kernelsu/hook/patch_memory.h
           #include <linux/version.h>
+          #include <linux/mm_types.h>
+          #include <asm/pgtable.h>
+          #include <asm/pgtable-types.h>
           #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
           typedef pgd_t p4d_t;
           #ifndef p4d_offset
