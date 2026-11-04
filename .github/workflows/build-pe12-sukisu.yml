@@ -1,0 +1,400 @@
+name: Build PE12 SukiSU and SUSFS Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target device'
+        required: true
+        default: 'starlte'
+        type: choice
+        options:
+          - starlte      # Galaxy S9    (SM-G960F)
+          - star2lte     # Galaxy S9+   (SM-G965F)
+          - crownlte     # Galaxy Note9 (SM-N960F)
+
+jobs:
+  build:
+    name: Build PE12 Kernel for ${{ github.event.inputs.device || 'starlte' }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev dwarves \
+            gcc-12-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            python3 make git curl unzip tar cpio lz4 \
+            libncurses-dev device-tree-compiler patch
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-12    /usr/local/bin/aarch64-linux-gnu-gcc
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-12    /usr/local/bin/aarch64-linux-gnu-g++
+          aarch64-linux-gnu-gcc --version
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      - name: Clone official PixelExperience 12 kernel tree
+        run: |
+          git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
+
+- name: "Integrate SukiSU-Ultra and SUSFS"
+        run: |
+          cd kernel_src
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git SukiSU
+          
+          # Allow CONFIG_KSU without KPROBES
+          sed -i 's/depends on KPROBES && EXT4_FS/depends on EXT4_FS/g' SukiSU/kernel/Kconfig
+
+          # Copy SukiSU kernel and uapi headers
+          cp -r SukiSU/kernel drivers/kernelsu
+          rm -rf drivers/kernelsu/include/uapi
+          cp -r SukiSU/uapi drivers/kernelsu/include/uapi
+          cp -r SukiSU/uapi drivers/kernelsu/uapi
+          grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+          grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          # Linux 4.9 compatibility fixes for SukiSU-Ultra
+          sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
+          
+          python3 - <<'PYEOF'
+          # Add Linux 4.9 page-table walking & copy_to_kernel_nofault shims to patch_memory.c
+          pm_path = 'drivers/kernelsu/hook/arm64/patch_memory.c'
+          with open(pm_path, 'r') as f:
+              c = f.read()
+          shim = '''#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+typedef pgd_t p4d_t;
+#define p4d_offset(pgd, addr) (pgd)
+#define p4d_none(p4d) 0
+#define p4d_bad(p4d) 0
+#define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
+#define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
+#define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+#define copy_to_kernel_nofault probe_kernel_write
+#endif
+'''
+          target = '#include "../patch_memory.h"'
+          if target in c and 'LINUX_VERSION_CODE' not in c:
+              c = c.replace(target, target + '
+' + shim)
+              with open(pm_path, 'w') as f:
+                  f.write(c)
+              print("Patched patch_memory.c for Linux 4.9 successfully!")
+          PYEOF
+
+          echo "SukiSU integrated into drivers/kernelsu successfully!"
+
+      - name: Integrate SUSFS into Kernel
+        run: |
+          cd kernel_src
+          cp ../susfs_patches/susfs.c fs/
+          cp ../susfs_patches/susfs.h include/linux/
+          cp ../susfs_patches/susfs_def.h include/linux/
+
+          # Apply SUSFS kernel patch
+          git apply --verbose ../susfs_patches/50_add_susfs_in_kernel-4.9.patch
+          echo "Applied SUSFS kernel patch cleanly!"
+
+      - name: Apply Non-GKI Manual Hooks to Kernel
+        run: |
+          cd kernel_src
+          python3 - <<'PYEOF'
+          # 1. fs/exec.c
+          with open('fs/exec.c', 'r') as f:
+              c = f.read()
+          exec_decl = """#ifdef CONFIG_KSU
+          extern bool ksu_execveat_hook __read_mostly;
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+          			void *envp, int *flags);
+          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+          				 void *argv, void *envp, int *flags);
+          #endif
+          """
+          exec_target = 'static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n\tchar *pathbuf = NULL;'
+          exec_replacement = exec_decl + 'static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\tchar *pathbuf = NULL;'
+          if 'ksu_execveat_hook' not in c:
+              assert exec_target in c, "exec_target not found in fs/exec.c!"
+              c = c.replace(exec_target, exec_replacement)
+              with open('fs/exec.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/exec.c cleanly!")
+
+          # 2. fs/open.c
+          with open('fs/open.c', 'r') as f:
+              c = f.read()
+          open_decl = """#ifdef CONFIG_KSU
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+          			        int *flags);
+          #endif
+          """
+          open_target = 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n\tconst struct cred *old_cred;'
+          open_replacement = open_decl + 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n\tconst struct cred *old_cred;'
+          if 'ksu_handle_faccessat' not in c:
+              assert open_target in c, "open_target not found in fs/open.c!"
+              c = c.replace(open_target, open_replacement)
+              with open('fs/open.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/open.c cleanly!")
+
+          # 3. fs/read_write.c
+          with open('fs/read_write.c', 'r') as f:
+              c = f.read()
+          rw_decl = """#ifdef CONFIG_KSU
+          extern bool ksu_vfs_read_hook __read_mostly;
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+          			size_t *count_ptr, loff_t **pos);
+          #endif
+          """
+          rw_target = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;'
+          rw_replacement = rw_decl + 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n\tssize_t ret;'
+          if 'ksu_handle_vfs_read' not in c:
+              assert rw_target in c, "rw_target not found in fs/read_write.c!"
+              c = c.replace(rw_target, rw_replacement)
+              with open('fs/read_write.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/read_write.c cleanly!")
+
+          # 4. fs/stat.c
+          with open('fs/stat.c', 'r') as f:
+              c = f.read()
+          stat_decl = """#ifdef CONFIG_KSU
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          #endif
+          """
+          stat_target = 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\t\tint flag)\n{\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
+          stat_replacement = stat_decl + 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\t\tint flag)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
+          if 'ksu_handle_stat' not in c:
+              assert stat_target in c, "stat_target not found in fs/stat.c!"
+              c = c.replace(stat_target, stat_replacement)
+              with open('fs/stat.c', 'w') as f:
+                  f.write(c)
+              print("Patched fs/stat.c cleanly!")
+
+          # 5. drivers/input/input.c
+          with open('drivers/input/input.c', 'r') as f:
+              c = f.read()
+          input_decl = """#ifdef CONFIG_KSU
+          extern bool ksu_input_hook __read_mostly;
+          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+          #endif
+          """
+          input_target = 'static void input_handle_event(struct input_dev *dev,\n\t\t\t       unsigned int type, unsigned int code, int value)\n{\n\tint disposition = input_get_disposition(dev, type, code, &value);'
+          input_replacement = input_decl + 'static void input_handle_event(struct input_dev *dev,\n\t\t\t       unsigned int type, unsigned int code, int value)\n{\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n\tint disposition = input_get_disposition(dev, type, code, &value);'
+          if 'ksu_handle_input_handle_event' not in c:
+              assert input_target in c, "input_target not found in drivers/input/input.c!"
+              c = c.replace(input_target, input_replacement)
+              with open('drivers/input/input.c', 'w') as f:
+                  f.write(c)
+              print("Patched drivers/input/input.c cleanly!")
+          PYEOF
+          echo "All non-GKI manual hooks applied successfully!"
+
+      - name: Apply Green Screen ALPM Fix
+        run: |
+          cd kernel_src
+          git apply --verbose ../green_screen_fix.patch
+          echo "Green screen fix patch applied successfully!"
+
+      - name: Fix GCC 12 float incompatibility in DPU driver
+        run: |
+          cd kernel_src
+          sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
+          echo "Fixed decon_reg.c for GCC 12!"
+
+      - name: Clean Makefiles of -Werror for GCC 12 compatibility
+        run: |
+          cd kernel_src
+          python3 - <<'PYEOF'
+          import os, re
+          count = 0
+          for root, dirs, files in os.walk('.'):
+              for f in files:
+                  if f.startswith('Makefile') or f.startswith('Kbuild') or f.endswith('.mk'):
+                      path = os.path.join(root, f)
+                      try:
+                          with open(path, 'r', errors='ignore') as fp:
+                              content = fp.read()
+                          if '-Werror' in content:
+                              new_content = re.sub(r'-Werror[=a-zA-Z0-9_-]*', '', content)
+                              with open(path, 'w') as fp:
+                                  fp.write(new_content)
+                              count += 1
+                      except Exception:
+                          pass
+          print(f"Stripped -Werror from {count} Makefiles!")
+          PYEOF
+
+      - name: Configure Kernel with SUSFS, KernelSU & Stock Clocks
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          DEFCONFIG="exynos9810-${DEVICE}_defconfig"
+          cd kernel_src
+
+          sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-mintmuffin-sukisu"/g' arch/arm64/configs/$DEFCONFIG
+          cat << 'EOF' >> arch/arm64/configs/$DEFCONFIG
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          EOF
+
+          mkdir -p out
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out $DEFCONFIG
+
+          # Verify KSU and SUSFS are preserved in .config
+          echo "=== Checking .config for KSU and SUSFS ==="
+          grep -E 'CONFIG_KSU|CONFIG_KALLSYMS' out/.config
+
+      - name: Compile Kernel
+        run: |
+          cd kernel_src
+          make -j$(nproc --all) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out
+
+      - name: Build Genuine Samsung DTBH and Image-dtb
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          cd kernel_src
+          DTB_DIR="out/arch/arm64/boot/dts/exynos"
+          IMAGE="out/arch/arm64/boot/Image"
+          OUT_IMAGE="out/arch/arm64/boot/Image-dtb"
+
+          cat "$IMAGE" > "$OUT_IMAGE"
+          for dtb in "$DTB_DIR"/exynos9810-${DEVICE}*.dtb; do
+            if [ -f "$dtb" ]; then
+              cat "$dtb" >> "$OUT_IMAGE"
+              echo "Appended $dtb"
+            fi
+          done
+
+          python3 - <<PYEOF
+          import struct, os
+          device = "$DEVICE"
+          dtb_path = f"out/arch/arm64/boot/dts/exynos/exynos9810-{device}_eur_open_26.dtb"
+          if not os.path.exists(dtb_path):
+              dtbs = [f for f in os.listdir("out/arch/arm64/boot/dts/exynos") if f.startswith(f"exynos9810-{device}") and f.endswith(".dtb")]
+              dtb_path = os.path.join("out/arch/arm64/boot/dts/exynos", dtbs[0])
+
+          with open(dtb_path, 'rb') as f:
+              new_dtb = f.read()
+
+          page_size = 2048
+          pad_len = (page_size - (len(new_dtb) % page_size)) % page_size
+          padded_dtb = new_dtb + b'\x00' * pad_len
+
+          dtbh_hdr = bytearray(2048)
+          struct.pack_into('<4sIII', dtbh_hdr, 0, b'DTBH', 2, 1, 0x2652)
+          struct.pack_into('<IIIIII', dtbh_hdr, 16, 0x50A6, 0x217584DA, 26, 255, 2048, len(new_dtb))
+          dtbh_hdr[40] = 0x20
+
+          with open('dt.img', 'wb') as f:
+              f.write(dtbh_hdr + padded_dtb)
+          print("Built DTBH image successfully!")
+          PYEOF
+
+      - name: Package AnyKernel3 Zip for TWRP
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          cp kernel_src/out/arch/arm64/boot/Image-dtb ak3/
+          cp kernel_src/dt.img ak3/dt.img
+          cp kernel_src/dt.img ak3/dt
+          cp kernel_src/dt.img ak3/boot.img-dt
+
+          cat > ak3/anykernel.sh <<AKEOF
+          # AnyKernel3 Config
+          kernel.string=PixelExperience 12.1 SukiSU-Ultra + SUSFS + GreenFix
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=starlte
+          device.name2=star2lte
+          device.name3=crownlte
+          device.name4=SM-G960F
+          device.name5=SM-G965F
+          block=/dev/block/platform/13500000.ufs/by-name/BOOT;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          . tools/ak3-core.sh
+          split_boot;
+          flash_boot;
+          AKEOF
+
+          cd ak3
+          zip -r9 "../anykernel3-${DEVICE}-pe12-sukisu-susfs-greenfix.zip" * -x .git README.md *placeholder
+          cd ..
+
+      - name: Package Standalone boot.img and Odin TAR
+        run: |
+          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
+          python3 - <<'PYEOF'
+          import struct, os, tarfile
+
+          with open('kernel_src/out/arch/arm64/boot/Image', 'rb') as f:
+              k_data = f.read()
+          with open('kernel_src/dt.img', 'rb') as f:
+              dt_data = f.read()
+          with open('tools/pe12_ramdisk.cpio.gz', 'rb') as f:
+              r_data = f.read()
+
+          page_size = 2048
+          ksize = len(k_data)
+          rsize = len(r_data)
+          dtsize = len(dt_data)
+
+          hdr = bytearray(page_size)
+          struct.pack_into('<8sIIIIIIIIII', hdr, 0,
+                           b'ANDROID!', ksize, 268468224,
+                           rsize, 285212672,
+                           0, 0, 268435712,
+                           page_size, dtsize, 402653547)
+          cmdline = b'buildvariant=userdebug\x00'
+          hdr[64:64+len(cmdline)] = cmdline
+
+          def pad(data, align):
+              rem = len(data) % align
+              return data + b'\x00' * (align - rem) if rem else data
+
+          out_boot = f"boot_{os.environ.get('DEVICE', 'starlte')}_pe12_sukisu_susfs.img"
+          with open(out_boot, 'wb') as f:
+              f.write(hdr)
+              f.write(pad(k_data, page_size))
+              f.write(pad(r_data, page_size))
+              f.write(dt_data)
+
+          print(f"Created standalone boot.img: {os.path.getsize(out_boot)} bytes")
+
+          out_tar = f"boot-{os.environ.get('DEVICE', 'starlte')}-pe12-sukisu-susfs-ODIN.tar"
+          with tarfile.open(out_tar, 'w') as tar:
+              tar.add(out_boot, arcname='boot.img')
+          print(f"Created Odin TAR: {os.path.getsize(out_tar)} bytes")
+          PYEOF
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pe12-sukisu-susfs-${{ github.event.inputs.device || 'starlte' }}
+          path: |
+            anykernel3-*-pe12-sukisu-susfs-greenfix.zip
+            boot_*_pe12_sukisu_susfs.img
+            boot-*-pe12-sukisu-susfs-ODIN.tar
