@@ -1,4 +1,4 @@
-name: "Build Official PE12 Kernel with Green Screen Fix, SukiSU and SUSFS"
+name: Build Official PE12 Kernel with Green Screen Fix, SukiSU and SUSFS
 
 on:
   workflow_dispatch:
