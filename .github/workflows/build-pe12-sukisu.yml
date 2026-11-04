@@ -58,12 +58,8 @@ jobs:
           # Linux 4.9 compatibility fixes for SukiSU-Ultra
           sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
           
-          python3 - <<'PYEOF'
-          # Add Linux 4.9 page-table walking & copy_to_kernel_nofault shims to patch_memory.c
-          pm_path = 'drivers/kernelsu/hook/arm64/patch_memory.c'
-          with open(pm_path, 'r') as f:
-              c = f.read()
-          shim = '''#include <linux/version.h>
+                    cat >> drivers/kernelsu/hook/patch_memory.h << 'PMEOF'
+#include <linux/version.h>
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 typedef pgd_t p4d_t;
 #define p4d_offset(pgd, addr) (pgd)
@@ -76,15 +72,7 @@ typedef pgd_t p4d_t;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
 #define copy_to_kernel_nofault probe_kernel_write
 #endif
-'''
-          target = '#include "../patch_memory.h"'
-          if target in c and 'LINUX_VERSION_CODE' not in c:
-              c = c.replace(target, target + '
-' + shim)
-              with open(pm_path, 'w') as f:
-                  f.write(c)
-              print("Patched patch_memory.c for Linux 4.9 successfully!")
-          PYEOF
+PMEOF
 
           echo "SukiSU integrated into drivers/kernelsu successfully!"
 
