@@ -1,4 +1,4 @@
-name: Build Official PE12 Kernel with Green Screen Fix, KernelSU & SUSFS
+name: "Build Official PE12 Kernel with Green Screen Fix, KernelSU and SUSFS"
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
         run: |
           git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
 
-      - name: Integrate KernelSU v1.0.3 & SUSFS
+      - name: "Integrate KernelSU v1.0.3 and SUSFS"
         run: |
           cd kernel_src
           git clone --depth=1 --branch v1.0.3 https://github.com/tiann/KernelSU.git KernelSU
@@ -267,7 +267,7 @@ bool susfs_is_mnt_devname_ksu(struct path *path) {
           print(f"Stripped -Werror from {count} Makefiles!")
           PYEOF
 
-      - name: Configure Kernel with SUSFS, KernelSU & Stock Clocks
+      - name: "Configure Kernel with SUSFS, KernelSU and Stock Clocks"
         run: |
           DEVICE="${{ github.event.inputs.device || 'starlte' }}"
           DEFCONFIG="exynos9810-${DEVICE}_defconfig"
