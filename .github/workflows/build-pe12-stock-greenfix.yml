@@ -1,52 +1,23 @@
 name: Build PE12 kernel (green screen fix only, no root)
 
+# Galaxy S9 (starlte / SM-G960F) only.
+#
 # Same tree and same green-screen recovery patch as the rooted build, but
 # without KernelSU/SUSFS: useful as a baseline and for users who do not want
 # root on the device.
 
 on:
   workflow_dispatch:
-    inputs:
-      device:
-        description: 'Target device'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - starlte      # Galaxy S9    (SM-G960F)
-          - star2lte     # Galaxy S9+   (SM-G965F)
-          - crownlte     # Galaxy Note9 (SM-N960F)
 
 concurrency:
-  group: pe12-stock-${{ github.ref }}
+  group: pe12-greenfix-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  setup:
-    name: Resolve devices
-    runs-on: ubuntu-22.04
-    outputs:
-      devices: ${{ steps.devices.outputs.value }}
-    steps:
-      - id: devices
-        run: |
-          device='${{ github.event.inputs.device }}'
-          if [ -z "$device" ] || [ "$device" = "all" ]; then
-            echo 'value=["starlte","star2lte","crownlte"]' >> "$GITHUB_OUTPUT"
-          else
-            echo "value=[\"$device\"]" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
-    name: ${{ matrix.device }}
-    needs: setup
+    name: starlte
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        device: ${{ fromJson(needs.setup.outputs.devices) }}
 
     steps:
       - name: Checkout build recipes
@@ -85,18 +56,24 @@ jobs:
         run: |
           "$RUNNER_TEMP/toolchain/bin/aarch64-linux-gnu-gcc" --version | head -1
           echo "TOOLCHAIN_BIN=$RUNNER_TEMP/toolchain/bin" >> "$GITHUB_ENV"
+
       - name: Build kernel
         env:
           CROSS_COMPILE: aarch64-linux-gnu-
         run: |
           export PATH="$TOOLCHAIN_BIN:$PATH"
-          ./scripts/build.sh --device "${{ matrix.device }}" --root-solution none \
+          ./scripts/build.sh --device starlte --root-solution none \
             --workdir "$RUNNER_TEMP/work" --jobs "$(nproc)"
+
+      - name: Show what we are shipping
+        run: |
+          ls -l dist
+          unzip -l dist/anykernel3-*.zip | head -20
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pe12-greenfix-${{ matrix.device }}
+          name: pe12-greenfix-starlte
           if-no-files-found: error
           retention-days: 30
           path: |

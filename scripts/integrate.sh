@@ -15,6 +15,7 @@
 #   --susfs <yes|no>        Kernel-side SUSFS patch  (default: yes)
 #   --green-screen <yes|no> AMOLED green-screen fix  (default: yes)
 #   --board <name>          Defconfig board to tune: starlte|star2lte|crownlte|all
+#                           (default: starlte - the only shipped device)
 #                           (default: all, i.e. every exynos9810-*_defconfig)
 #   --no-defconfig          Do not touch the defconfigs
 #
@@ -45,7 +46,7 @@ KERNEL_DIR=""
 ROOT_SOLUTION="bakasu"
 USE_SUSFS="yes"
 GREEN_SCREEN="yes"
-BOARD="all"
+BOARD="starlte"
 DO_DEFCONFIG="yes"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }

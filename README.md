@@ -7,7 +7,7 @@ recovery patch and a **current** KernelSU-lineage root solution plus SUSFS.
 | | |
 |---|---|
 | Base tree | `PixelExperience-Devices/kernel_samsung_exynos9810` @ `twelve` (Linux 4.9.319) |
-| Devices | `starlte` (SM-G960F), `star2lte` (SM-G965F), `crownlte` (SM-N960F) |
+| Device | `starlte` - Galaxy S9 (SM-G960F) |
 | Root | **BakaSU** @ `516d3e8` — KernelSU fork, formerly ReSukiSU, from the SukiSU-Ultra family |
 | Hiding | **SUSFS v2.3.0**, Linux 4.9 non-GKI port |
 | Hook mode | SUSFS inline hooks (no KPROBES on this kernel, no manual hook patches to maintain) |
@@ -56,16 +56,18 @@ tools/pe12_ramdisk.cpio.gz  stock PE12 ramdisk used by the standalone boot.img
 ### CI (recommended)
 
 Actions -> **Build PE12 kernel (BakaSU + SUSFS + green screen fix)** ->
-*Run workflow* -> pick a device or `all`. Artifacts:
+*Run workflow* (it builds `starlte`, the Galaxy S9). Artifacts:
 
 ```
-anykernel3-<device>-pe12-bakasu-susfs.zip     flash in TWRP / FKM / EX Kernel Manager
-boot_<device>_pe12_bakasu_susfs.img           standalone boot image
-boot-<device>-pe12-bakasu-susfs-ODIN.tar      Odin AP slot
+anykernel3-starlte-pe12-bakasu-susfs.zip      flash in TWRP / FKM / EX Kernel Manager
+boot_starlte_pe12_bakasu_susfs.img            standalone boot image
+boot-starlte-pe12-bakasu-susfs-ODIN.tar       Odin AP slot
 ```
 
 A second workflow, **… (green screen fix only, no root)**, builds the same
-kernel without KernelSU/SUSFS.
+kernel without KernelSU/SUSFS. Both workflows are `starlte`-only; adding
+another board means extending the device list in `scripts/build.sh` and
+`scripts/package.sh` (the DTB is selected by the board's defconfig).
 
 ### Locally
 

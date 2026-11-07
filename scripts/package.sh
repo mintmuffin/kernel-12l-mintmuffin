@@ -43,10 +43,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$KERNEL_DIR" ] || die "--kernel-dir is required"
-[ -n "$DEVICE" ] || die "--device is required (starlte|star2lte|crownlte)"
+[ -n "$DEVICE" ] || die "--device is required (starlte)"
+# S9 only; add entries here (and in build.sh) to package another board.
 case "$DEVICE" in
-	starlte|star2lte|crownlte) ;;
-	*) die "unsupported device '$DEVICE'" ;;
+	starlte) ;;
+	*) die "unsupported device '$DEVICE' (supported: starlte)" ;;
 esac
 
 BUILD_OUT="$KERNEL_DIR/out"
@@ -97,11 +98,7 @@ do.systemless=1
 do.cleanup=1
 do.cleanuponabort=0
 device.name1=starlte
-device.name2=star2lte
-device.name3=crownlte
-device.name4=SM-G960F
-device.name5=SM-G965F
-device.name6=SM-N960F
+device.name2=SM-G960F
 supported.versions=
 supported.patchlevels=
 supported.vendorpatchlevels=

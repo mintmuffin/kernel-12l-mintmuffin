@@ -98,7 +98,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True, help="out/arch/arm64/boot/Image")
     ap.add_argument("--dtb-dir", required=True, help="out/arch/arm64/boot/dts/exynos")
-    ap.add_argument("--device", required=True, help="starlte | star2lte | crownlte")
+    ap.add_argument("--device", required=True, help="starlte (Galaxy S9, SM-G960F)")
     ap.add_argument("--ramdisk", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--tag", default="pe12-bakasu-susfs")

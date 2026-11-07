@@ -9,7 +9,8 @@
 #   scripts/build.sh --device starlte [options]
 #
 # Options:
-#   --device <name>       starlte | star2lte | crownlte | all   (default: all)
+#   --device <name>       starlte (Galaxy S9, SM-G960F)       (default: starlte)
+#                         add the board to the DEVICES list below to support more
 #   --workdir <dir>       Where the kernel tree is cloned   (default: ./work)
 #   --jobs <n>            Parallel make jobs                (default: nproc)
 #   --root-solution <n>   bakasu | none                     (default: bakasu)
@@ -31,7 +32,7 @@ KERNEL_REF="${KERNEL_REF:-twelve}"
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 export CROSS_COMPILE
 
-DEVICE="all"
+DEVICE="starlte"
 WORKDIR="$REPO_DIR/work"
 JOBS="$(nproc)"
 ROOT_SOLUTION="bakasu"
@@ -53,9 +54,12 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# Board -> defconfig board name. Only the S9 is shipped; add another entry
+# (e.g. star2lte / crownlte) here and in scripts/package.sh if that changes.
+DEVICES="starlte"
 case "$DEVICE" in
-	starlte|star2lte|crownlte|all) ;;
-	*) die "unsupported device '$DEVICE'" ;;
+	starlte) ;;
+	*) die "unsupported device '$DEVICE' (supported: $DEVICES)" ;;
 esac
 
 for tool in make git python3 "${CROSS_COMPILE}gcc"; do
@@ -89,7 +93,7 @@ log "Kernel: $(make -s -C "$KERNEL_DIR" kernelversion 2>/dev/null || echo unknow
 
 # --------------------------------------------------------------- integrate
 "$SCRIPT_DIR/integrate.sh" --kernel-dir "$KERNEL_DIR" \
-	--root-solution "$ROOT_SOLUTION" --susfs yes --green-screen yes --board all
+	--root-solution "$ROOT_SOLUTION" --susfs yes --green-screen yes --board "$DEVICE"
 
 # ------------------------------------------------------------------- build
 # Modern GCC is much stricter than the 2017/2018 toolchain this tree was
@@ -134,11 +138,7 @@ package_one() { # package_one <device>
 		--out "$REPO_DIR/dist" --tag "$tag"
 }
 
-if [ "$DEVICE" = "all" ]; then
-	devices="starlte star2lte crownlte"
-else
-	devices="$DEVICE"
-fi
+devices="$DEVICE"
 
 for device in $devices; do
 	build_one "$device"
