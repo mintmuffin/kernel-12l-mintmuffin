@@ -128,6 +128,20 @@ su -c 'ksu_susfs show version'     # v2.3.0
 ksu_susfs hide_sus_mnts_for_non_su_procs 1
 ```
 
+5. Modules need a **metamodule**. BakaSU 4.x follows the KernelSU 3.x model:
+   the kernel no longer mounts module files itself, a metamodule does. Until
+   one is installed the manager lists every module as *"module is not mounted,
+   because the metamodule is not installed"* — root, SUSFS and app profiles
+   work fine, but `/system` overlays do not apply.
+
+   Install `meta-overlayfs` (Modules -> Repository -> filter *metamodules*, or
+   the release zip from `KernelSU-Modules-Repo/meta-overlayfs`) and reboot.
+   This kernel already has what the overlayfs metamodule needs
+   (`CONFIG_OVERLAY_FS=y`, `CONFIG_TMPFS_XATTR=y`, `CONFIG_BLK_DEV_LOOP=y`,
+   `CONFIG_EXT4_FS=y`), and `CONFIG_KSU_SUSFS_SUS_MOUNT=y` keeps those mounts
+   hidden from non-root apps. If overlayfs misbehaves on 4.9, `mountify` or
+   `Magic Mount RS` are the bind-mount alternatives.
+
 ## Notes and limitations
 
 * `CONFIG_KSU_SUSFS_SUS_MAP`, `SUS_PATH`, `SUS_MOUNT`, `SUS_KSTAT`,
@@ -138,6 +152,8 @@ ksu_susfs hide_sus_mnts_for_non_su_procs 1
   app that is supposed to see them (e.g. file managers, banking apps).
 * The tree builds everything built-in (no loadable modules), so there is no
   vermagic/module mismatch with the vendor partitions after flashing.
+* The metamodule message in the manager is informational: it means "nothing to
+  mount yet", not "BakaSU is broken".
 * The stock DVFS tables and thermal governors are untouched.
 * Updating: bump `BAKASU_COMMIT` in `scripts/integrate.sh` (or set it in the
   environment) and see `patches/susfs/README.md` for SUSFS.
