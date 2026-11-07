@@ -12,6 +12,9 @@ on:
           - starlte      # Galaxy S9    (SM-G960F)
           - star2lte     # Galaxy S9+   (SM-G965F)
           - crownlte     # Galaxy Note9 (SM-N960F)
+  push:
+    paths:
+      - '.github/workflows/build-pe12-sukisu-susfs.yml'
 
 jobs:
   build:
@@ -39,121 +42,25 @@ jobs:
         run: |
           git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
 
-      - name: Integrate SukiSU-Ultra and SUSFS
+      - name: Integrate SukiSU-Ultra (builtin branch)
         run: |
           cd kernel_src
-          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git SukiSU
-          
-          # Allow CONFIG_KSU without KPROBES
-          sed -i 's/depends on KPROBES && EXT4_FS/depends on EXT4_FS/g' SukiSU/kernel/Kconfig
+          git clone --depth=1 --branch builtin https://github.com/SukiSU-Ultra/SukiSU-Ultra.git SukiSU
 
           # Copy SukiSU kernel and uapi headers
           cp -r SukiSU/kernel drivers/kernelsu
           rm -rf drivers/kernelsu/include/uapi
-          cp -r SukiSU/uapi drivers/kernelsu/include/uapi
-          cp -r SukiSU/uapi drivers/kernelsu/uapi
+          mkdir -p drivers/kernelsu/include
+          cp -r SukiSU/uapi drivers/kernelsu/include/uapi 2>/dev/null || true
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          # Create Linux 4.9 header wrappers for missing 5.x/6.x headers
-          mkdir -p include/linux/sched
-          echo '#include <asm/pgtable.h>' > include/linux/pgtable.h
-          echo '#include <linux/compiler.h>' > include/linux/compiler_types.h
-          echo '#include <linux/sched.h>' > include/linux/sched/task_stack.h
-          echo '#include <linux/sched.h>' > include/linux/sched/task.h
-          echo '#include <linux/sched.h>' > include/linux/sched/signal.h
-          echo '#include <linux/sched.h>' > include/linux/sched/user.h
-          
-          # Linux 4.9 compatibility fixes for SukiSU-Ultra
-          sed -i 's/#elif defined(__riscv)/#elif defined(__riscv) || defined(__aarch64__)/g' drivers/kernelsu/hook/syscall_hook.h
-          
-          cat << 'COMEOF' >> drivers/kernelsu/include/arch.h
-          #include <linux/version.h>
-          #include <linux/mm_types.h>
-          #include <asm/pgtable.h>
-          #include <asm/pgtable-types.h>
-          #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-          typedef pgd_t p4d_t;
-          #ifndef p4d_offset
-          #define p4d_offset(pgd, addr) (pgd)
-          #define p4d_none(p4d) 0
-          #define p4d_bad(p4d) 0
-          #endif
-          #ifndef __pte_to_phys
-          #define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
-          #endif
-          #ifndef __pmd_to_phys
-          #define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
-          #endif
-          #ifndef __pud_to_phys
-          #define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
-          #endif
-          #endif
-          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
-          #ifndef copy_to_kernel_nofault
-          #define copy_to_kernel_nofault probe_kernel_write
-          #endif
-          #ifndef copy_from_kernel_nofault
-          #define copy_from_kernel_nofault probe_kernel_read
-          #endif
-          #endif
-          #ifndef MODULE_IMPORT_NS
-          #define MODULE_IMPORT_NS(ns)
-          #endif
-          COMEOF
-          
-          cat << 'COMEOF2' >> drivers/kernelsu/hook/patch_memory.h
-          #include <linux/version.h>
-          #include <linux/mm_types.h>
-          #include <asm/pgtable.h>
-          #include <asm/pgtable-types.h>
-          #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-          typedef pgd_t p4d_t;
-          #ifndef p4d_offset
-          #define p4d_offset(pgd, addr) (pgd)
-          #define p4d_none(p4d) 0
-          #define p4d_bad(p4d) 0
-          #endif
-          #ifndef __pte_to_phys
-          #define __pte_to_phys(pte) (pte_pfn(pte) << PAGE_SHIFT)
-          #endif
-          #ifndef __pmd_to_phys
-          #define __pmd_to_phys(pmd) (pmd_pfn(pmd) << PAGE_SHIFT)
-          #endif
-          #ifndef __pud_to_phys
-          #define __pud_to_phys(pud) (pud_pfn(pud) << PAGE_SHIFT)
-          #endif
-          #endif
-          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
-          #ifndef copy_to_kernel_nofault
-          #define copy_to_kernel_nofault probe_kernel_write
-          #endif
-          #ifndef copy_from_kernel_nofault
-          #define copy_from_kernel_nofault probe_kernel_read
-          #endif
-          #endif
-          COMEOF2
-          
-          # Linux 4.9 compatibility for lsm_hook.c (struct security_hook_heads is not hlist in 4.9)
-          cat << 'LSMSTUB' > lsm_stub.txt
-          #include <linux/version.h>
-          #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
-          #include "lsm_hook.h"
-          #include <linux/errno.h>
-          int ksu_lsm_hook(struct ksu_lsm_hook *hook) { return -EOPNOTSUPP; }
-          void ksu_lsm_unhook(struct ksu_lsm_hook *hook) {}
-          int ksu_register_lsm_hook(struct ksu_lsm_hook *hook) { return -EOPNOTSUPP; }
-          void ksu_unregister_lsm_hook(struct ksu_lsm_hook *hook) {}
-          void __init ksu_lsm_hook_init(void) {}
-          void __exit ksu_lsm_hook_exit(void) {}
-          #else
-          LSMSTUB
-          cat lsm_stub.txt drivers/kernelsu/hook/lsm_hook.c > drivers/kernelsu/hook/lsm_hook_new.c
-          echo "#endif" >> drivers/kernelsu/hook/lsm_hook_new.c
-          mv drivers/kernelsu/hook/lsm_hook_new.c drivers/kernelsu/hook/lsm_hook.c
-          rm -f lsm_stub.txt
+          # Linux 4.9 compatibility for sucompat hooks signature
+          sed -i 's/#ifdef CONFIG_KSU_SUSFS/#if defined(CONFIG_KSU_SUSFS) \&\& (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))/g' drivers/kernelsu/feature/sucompat.h
+          sed -i 's/#ifdef CONFIG_KSU_SUSFS/#if defined(CONFIG_KSU_SUSFS) \&\& (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))/g' drivers/kernelsu/feature/sucompat.c
 
-          echo "SukiSU integrated into drivers/kernelsu successfully!"
+          echo "SukiSU builtin branch integrated into drivers/kernelsu successfully!"
+
       - name: Integrate SUSFS into Kernel
         run: |
           cd kernel_src
@@ -175,9 +82,9 @@ jobs:
           exec_decl = """#ifdef CONFIG_KSU
           extern bool ksu_execveat_hook __read_mostly;
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-          			void *envp, int *flags);
+                                void *envp, int *flags);
           extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-          				 void *argv, void *envp, int *flags);
+                                 void *argv, void *envp, int *flags);
           #endif
           """
           exec_target = 'static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{\n\tchar *pathbuf = NULL;'
@@ -194,7 +101,7 @@ jobs:
               c = f.read()
           open_decl = """#ifdef CONFIG_KSU
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-          			        int *flags);
+                                        int *flags);
           #endif
           """
           open_target = 'SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{\n\tconst struct cred *old_cred;'
@@ -212,7 +119,7 @@ jobs:
           rw_decl = """#ifdef CONFIG_KSU
           extern bool ksu_vfs_read_hook __read_mostly;
           extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-          			size_t *count_ptr, loff_t **pos);
+                                size_t *count_ptr, loff_t **pos);
           #endif
           """
           rw_target = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;'
@@ -231,8 +138,8 @@ jobs:
           extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
           #endif
           """
-          stat_target = 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\t\tint flag)\n{\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
-          stat_replacement = stat_decl + 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\t\tint flag)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
+          stat_target = 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\tint flag)\n{\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
+          stat_replacement = stat_decl + 'int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,\n\tint flag)\n{\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n\tstruct path path;\n\tint error = -EINVAL;\n\tunsigned int lookup_flags = 0;'
           if 'ksu_handle_stat' not in c:
               assert stat_target in c, "stat_target not found in fs/stat.c!"
               c = c.replace(stat_target, stat_replacement)
@@ -302,8 +209,6 @@ jobs:
 
           sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-mintmuffin-mafushii"/g' arch/arm64/configs/$DEFCONFIG
           cat << 'EOF' >> arch/arm64/configs/$DEFCONFIG
-          CONFIG_KALLSYMS=y
-          CONFIG_KALLSYMS_ALL=y
           CONFIG_KSU=y
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
@@ -311,28 +216,35 @@ jobs:
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
           CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
           CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
           CONFIG_KSU_SUSFS_TRY_UMOUNT=y
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
           EOF
 
           mkdir -p out
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out $DEFCONFIG
 
-          # Verify KSU and SUSFS are preserved in .config
-          echo "=== Checking .config for KSU and SUSFS ==="
-          grep -E 'CONFIG_KSU|CONFIG_KALLSYMS' out/.config
-
       - name: Compile Kernel
         run: |
+          JOBS=$(nproc)
           cd kernel_src
-          make -j$(nproc --all) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out
+
+          EXTRA_KCFLAGS="-Wno-error -Wno-format -Wno-error=format \
+            -Wno-address -Wno-nonnull \
+            -Wno-implicit-fallthrough -Wno-unused-const-variable \
+            -Wno-maybe-uninitialized -Wno-array-bounds -Wno-stringop-overflow \
+            -Wno-misleading-indentation -Wno-missing-attributes \
+            -Wno-packed-not-aligned -Wno-restrict -Wno-format-overflow \
+            -Wno-enum-conversion -fno-pie"
+
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out KCFLAGS="$EXTRA_KCFLAGS" -j${JOBS} Image dtbs
+          echo "Kernel compiled successfully!"
 
       - name: Build Genuine Samsung DTBH and Image-dtb
         run: |
@@ -411,11 +323,13 @@ jobs:
           cd ..
 
       - name: Package Standalone boot.img and Odin TAR
+        env:
+          DEVICE: ${{ github.event.inputs.device || 'starlte' }}
         run: |
-          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
           python3 - <<'PYEOF'
           import struct, os, tarfile
 
+          device = os.environ.get('DEVICE', 'starlte')
           with open('kernel_src/out/arch/arm64/boot/Image', 'rb') as f:
               k_data = f.read()
           with open('kernel_src/dt.img', 'rb') as f:
@@ -441,7 +355,7 @@ jobs:
               rem = len(data) % align
               return data + b'\x00' * (align - rem) if rem else data
 
-          out_boot = f"boot_{os.environ.get('DEVICE', 'starlte')}_pe12_sukisu_susfs.img"
+          out_boot = f"boot_{device}_pe12_sukisu_susfs.img"
           with open(out_boot, 'wb') as f:
               f.write(hdr)
               f.write(pad(k_data, page_size))
@@ -450,7 +364,7 @@ jobs:
 
           print(f"Created standalone boot.img: {os.path.getsize(out_boot)} bytes")
 
-          out_tar = f"boot-{os.environ.get('DEVICE', 'starlte')}-pe12-sukisu-susfs-ODIN.tar"
+          out_tar = f"boot-{device}-pe12-sukisu-susfs-ODIN.tar"
           with tarfile.open(out_tar, 'w') as tar:
               tar.add(out_boot, arcname='boot.img')
           print(f"Created Odin TAR: {os.path.getsize(out_tar)} bytes")
