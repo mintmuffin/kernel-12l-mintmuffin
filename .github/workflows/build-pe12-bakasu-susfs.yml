@@ -73,16 +73,31 @@ jobs:
             python3 make git curl unzip zip tar cpio lz4 \
             libncurses-dev device-tree-compiler patch
 
+      - name: Restore toolchain cache
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/toolchain
+          key: linaro-gcc-6.4.1-aarch64-16f73337
+
       - name: Fetch toolchain (Linaro GCC 6.4.1 aarch64, pinned)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           TOOLCHAIN_DIR="$RUNNER_TEMP/toolchain"
-          git clone --quiet --depth=1 --branch lineage-19.1 \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git \
-            "$TOOLCHAIN_DIR"
-          git -C "$TOOLCHAIN_DIR" checkout --quiet 16f73337b3616cfe640b0130629a9569b30482ca
-          "$TOOLCHAIN_DIR/bin/aarch64-linux-gnu-gcc" --version | head -1
-          echo "TOOLCHAIN_BIN=$TOOLCHAIN_DIR/bin" >> "$GITHUB_ENV"
+          # Fetch by commit hash: this repo has no lineage-19.1 branch, and a
+          # shallow branch clone cannot check out an arbitrary SHA either.
+          mkdir -p "$TOOLCHAIN_DIR"
+          git -C "$TOOLCHAIN_DIR" init --quiet
+          git -C "$TOOLCHAIN_DIR" remote add origin \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git
+          git -C "$TOOLCHAIN_DIR" fetch --quiet --depth=1 origin \
+            16f73337b3616cfe640b0130629a9569b30482ca
+          git -C "$TOOLCHAIN_DIR" checkout --quiet FETCH_HEAD
 
+      - name: Verify toolchain
+        run: |
+          "$RUNNER_TEMP/toolchain/bin/aarch64-linux-gnu-gcc" --version | head -1
+          echo "TOOLCHAIN_BIN=$RUNNER_TEMP/toolchain/bin" >> "$GITHUB_ENV"
       - name: Build kernel
         env:
           CROSS_COMPILE: aarch64-linux-gnu-
