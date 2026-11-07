@@ -1,0 +1,14 @@
+# build workspace (kernel tree, toolchain, artifacts)
+/work/
+/dist/
+*.tar.gz
+*.zip
+*.img
+
+# kernel build leftovers, in case someone builds in-tree
+*.o
+*.ko
+*.cmd
+*.rej
+*.orig
+/out/

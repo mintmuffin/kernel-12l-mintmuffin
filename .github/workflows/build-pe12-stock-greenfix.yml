@@ -1,4 +1,8 @@
-name: Build Official PE12 Kernel with Green Screen Fix (Stock)
+name: Build PE12 kernel (green screen fix only, no root)
+
+# Same tree and same green-screen recovery patch as the rooted build, but
+# without KernelSU/SUSFS: useful as a baseline and for users who do not want
+# root on the device.
 
 on:
   workflow_dispatch:
@@ -6,20 +10,46 @@ on:
       device:
         description: 'Target device'
         required: true
-        default: 'starlte'
+        default: 'all'
         type: choice
         options:
+          - all
           - starlte      # Galaxy S9    (SM-G960F)
           - star2lte     # Galaxy S9+   (SM-G965F)
           - crownlte     # Galaxy Note9 (SM-N960F)
 
+concurrency:
+  group: pe12-stock-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build PE12 Stock Kernel for ${{ github.event.inputs.device || 'starlte' }}
+  setup:
+    name: Resolve devices
     runs-on: ubuntu-22.04
+    outputs:
+      devices: ${{ steps.devices.outputs.value }}
+    steps:
+      - id: devices
+        run: |
+          device='${{ github.event.inputs.device }}'
+          if [ -z "$device" ] || [ "$device" = "all" ]; then
+            echo 'value=["starlte","star2lte","crownlte"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "value=[\"$device\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: ${{ matrix.device }}
+    needs: setup
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ${{ fromJson(needs.setup.outputs.devices) }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout build recipes
         uses: actions/checkout@v4
 
       - name: Install build dependencies
@@ -27,206 +57,34 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev dwarves \
-            gcc-12-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            python3 make git curl unzip tar cpio lz4 \
-            libncurses-dev device-tree-compiler
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-12 /usr/local/bin/aarch64-linux-gnu-gcc
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-12 /usr/local/bin/aarch64-linux-gnu-g++
-          aarch64-linux-gnu-gcc --version
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+            python3 make git curl unzip zip tar cpio lz4 \
+            libncurses-dev device-tree-compiler patch
 
-      - name: Clone official PixelExperience 12 kernel tree
+      - name: Fetch toolchain (Linaro GCC 6.4.1 aarch64, pinned)
         run: |
-          git clone --depth=1 --branch twelve https://github.com/PixelExperience-Devices/kernel_samsung_exynos9810.git kernel_src
+          TOOLCHAIN_DIR="$RUNNER_TEMP/toolchain"
+          git clone --quiet --depth=1 --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git \
+            "$TOOLCHAIN_DIR"
+          git -C "$TOOLCHAIN_DIR" checkout --quiet 16f73337b3616cfe640b0130629a9569b30482ca
+          "$TOOLCHAIN_DIR/bin/aarch64-linux-gnu-gcc" --version | head -1
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_DIR/bin" >> "$GITHUB_ENV"
 
-      - name: Apply Green Screen ALPM Fix
+      - name: Build kernel
+        env:
+          CROSS_COMPILE: aarch64-linux-gnu-
         run: |
-          cd kernel_src
-          if [ -f "../green_screen_fix.patch" ]; then
-            git apply --verbose ../green_screen_fix.patch
-          else
-            echo "Patch file not found!" && exit 1
-          fi
-          echo "Green screen fix applied successfully!"
+          export PATH="$TOOLCHAIN_BIN:$PATH"
+          ./scripts/build.sh --device "${{ matrix.device }}" --root-solution none \
+            --workdir "$RUNNER_TEMP/work" --jobs "$(nproc)"
 
-      - name: Fix GCC 12 float incompatibility in DPU driver
-        run: |
-          cd kernel_src
-          sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
-          echo "Fixed decon_reg.c for GCC 12!"
-
-      - name: Clean Makefiles of -Werror
-        run: |
-          cd kernel_src
-          python3 - <<'PYEOF'
-          import os, re
-          count = 0
-          for root, dirs, files in os.walk('.'):
-              for f in files:
-                  if f.startswith('Makefile') or f.startswith('Kbuild') or f.endswith('.mk'):
-                      path = os.path.join(root, f)
-                      try:
-                          with open(path, 'r', errors='ignore') as fp:
-                              content = fp.read()
-                          if '-Werror' in content:
-                              new_content = re.sub(r'-Werror[=a-zA-Z0-9_-]*', '', content)
-                              with open(path, 'w') as fp:
-                                  fp.write(new_content)
-                              count += 1
-                      except Exception:
-                          pass
-          print(f"Stripped -Werror from {count} Makefiles!")
-          PYEOF
-
-      - name: Compile Kernel
-        run: |
-          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          DEFCONFIG="exynos9810-${DEVICE}_defconfig"
-          JOBS=$(nproc)
-          cd kernel_src
-
-          echo "Compiling $DEFCONFIG on $JOBS threads (Stock PE12)..."
-
-          EXTRA_KCFLAGS="-Wno-error -Wno-format -Wno-error=format \
-            -Wno-address -Wno-nonnull \
-            -Wno-implicit-fallthrough -Wno-unused-const-variable \
-            -Wno-maybe-uninitialized -Wno-array-bounds -Wno-stringop-overflow \
-            -Wno-misleading-indentation -Wno-missing-attributes \
-            -Wno-packed-not-aligned -Wno-restrict -Wno-format-overflow \
-            -Wno-enum-conversion -fno-pie"
-
-          mkdir -p out
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out $DEFCONFIG
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out KCFLAGS="$EXTRA_KCFLAGS" -j${JOBS} Image dtbs
-          echo "Kernel compilation complete!"
-
-      - name: Build Genuine Samsung DTBH and Image-dtb
-        run: |
-          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          cd kernel_src
-          DTB_DIR="out/arch/arm64/boot/dts/exynos"
-          IMAGE="out/arch/arm64/boot/Image"
-          OUT_IMAGE="out/arch/arm64/boot/Image-dtb"
-
-          cat "$IMAGE" > "$OUT_IMAGE"
-          for dtb in "$DTB_DIR"/exynos9810-${DEVICE}*.dtb; do
-            if [ -f "$dtb" ]; then
-              cat "$dtb" >> "$OUT_IMAGE"
-              echo "Appended $dtb"
-            fi
-          done
-
-          python3 - <<PYEOF
-          import struct, os
-          device = "$DEVICE"
-          dtb_path = f"out/arch/arm64/boot/dts/exynos/exynos9810-{device}_eur_open_26.dtb"
-          if not os.path.exists(dtb_path):
-              dtbs = [f for f in os.listdir("out/arch/arm64/boot/dts/exynos") if f.startswith(f"exynos9810-{device}") and f.endswith(".dtb")]
-              dtb_path = os.path.join("out/arch/arm64/boot/dts/exynos", dtbs[0])
-
-          with open(dtb_path, 'rb') as f:
-              new_dtb = f.read()
-
-          page_size = 2048
-          pad_len = (page_size - (len(new_dtb) % page_size)) % page_size
-          padded_dtb = new_dtb + b'\x00' * pad_len
-
-          dtbh_hdr = bytearray(2048)
-          struct.pack_into('<4sIII', dtbh_hdr, 0, b'DTBH', 2, 1, 0x2652)
-          struct.pack_into('<IIIIII', dtbh_hdr, 16, 0x50A6, 0x217584DA, 26, 255, 2048, len(new_dtb))
-          dtbh_hdr[40] = 0x20
-
-          with open('dt.img', 'wb') as f:
-              f.write(dtbh_hdr + padded_dtb)
-          print("Built DTBH image successfully!")
-          PYEOF
-
-      - name: Package AnyKernel3 Zip for TWRP
-        run: |
-          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
-          cp kernel_src/out/arch/arm64/boot/Image-dtb ak3/
-          cp kernel_src/dt.img ak3/dt.img
-          cp kernel_src/dt.img ak3/dt
-          cp kernel_src/dt.img ak3/boot.img-dt
-
-          cat > ak3/anykernel.sh <<AKEOF
-          # AnyKernel3 Config
-          kernel.string=PixelExperience 12.1 Stock Kernel + Green Screen Fix
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=starlte
-          device.name2=star2lte
-          device.name3=crownlte
-          device.name4=SM-G960F
-          device.name5=SM-G965F
-          block=/dev/block/platform/13500000.ufs/by-name/BOOT;
-          is_slot_device=0;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-          . tools/ak3-core.sh
-          split_boot;
-          flash_boot;
-          AKEOF
-
-          cd ak3
-          zip -r9 "../anykernel3-${DEVICE}-pe12-stock-greenfix.zip" * -x .git README.md *placeholder
-          cd ..
-
-      - name: Package Standalone boot.img and Odin TAR
-        run: |
-          DEVICE="${{ github.event.inputs.device || 'starlte' }}"
-          python3 - <<'PYEOF'
-          import struct, os, tarfile
-
-          with open('kernel_src/out/arch/arm64/boot/Image', 'rb') as f:
-              k_data = f.read()
-          with open('kernel_src/dt.img', 'rb') as f:
-              dt_data = f.read()
-          with open('tools/pe12_ramdisk.cpio.gz', 'rb') as f:
-              r_data = f.read()
-
-          page_size = 2048
-          ksize = len(k_data)
-          rsize = len(r_data)
-          dtsize = len(dt_data)
-
-          hdr = bytearray(page_size)
-          struct.pack_into('<8sIIIIIIIIII', hdr, 0,
-                           b'ANDROID!', ksize, 268468224,
-                           rsize, 285212672,
-                           0, 0, 268435712,
-                           page_size, dtsize, 402653547)
-          cmdline = b'buildvariant=userdebug\x00'
-          hdr[64:64+len(cmdline)] = cmdline
-
-          def pad(data, align):
-              rem = len(data) % align
-              return data + b'\x00' * (align - rem) if rem else data
-
-          out_boot = f"boot_{os.environ.get('DEVICE', 'starlte')}_pe12_stock_greenfix.img"
-          with open(out_boot, 'wb') as f:
-              f.write(hdr)
-              f.write(pad(k_data, page_size))
-              f.write(pad(r_data, page_size))
-              f.write(dt_data)
-
-          print(f"Created standalone boot.img: {os.path.getsize(out_boot)} bytes")
-
-          out_tar = f"boot-{os.environ.get('DEVICE', 'starlte')}-pe12-stock-greenfix-ODIN.tar"
-          with tarfile.open(out_tar, 'w') as tar:
-              tar.add(out_boot, arcname='boot.img')
-          print(f"Created Odin TAR: {os.path.getsize(out_tar)} bytes")
-          PYEOF
-
-      - name: Upload Artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pe12-stock-greenfix-${{ github.event.inputs.device || 'starlte' }}
+          name: pe12-greenfix-${{ matrix.device }}
+          if-no-files-found: error
+          retention-days: 30
           path: |
-            anykernel3-*-pe12-stock-greenfix.zip
-            boot_*_pe12_stock_greenfix.img
-            boot-*-pe12-stock-greenfix-ODIN.tar
+            dist/anykernel3-*.zip
+            dist/boot_*.img
+            dist/boot-*-ODIN.tar

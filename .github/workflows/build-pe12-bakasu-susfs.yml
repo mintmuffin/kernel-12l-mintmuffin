@@ -1,0 +1,107 @@
+name: Build PE12 kernel (BakaSU + SUSFS + green screen fix)
+
+# BakaSU (formerly ReSukiSU, a SukiSU-Ultra downstream) + SUSFS v2.3.0
+# on the PixelExperience twelve (Linux 4.9.319) Exynos 9810 tree.
+#
+# Toolchain: Linaro GCC 6.4.1 aarch64 prebuilt, pinned. This is the
+# era-correct toolchain for a 4.9 tree and is what the builds are verified
+# with; the distro GCC 12 breaks this vendor code in ways that need more
+# patches than it is worth.
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target device'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - starlte      # Galaxy S9    (SM-G960F)
+          - star2lte     # Galaxy S9+   (SM-G965F)
+          - crownlte     # Galaxy Note9 (SM-N960F)
+  push:
+    branches:
+      - main
+    paths:
+      - 'patches/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - '.github/workflows/build-pe12-bakasu-susfs.yml'
+
+concurrency:
+  group: pe12-bakasu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    name: Resolve devices
+    runs-on: ubuntu-22.04
+    outputs:
+      devices: ${{ steps.devices.outputs.value }}
+    steps:
+      - id: devices
+        run: |
+          device='${{ github.event.inputs.device }}'
+          if [ -z "$device" ] || [ "$device" = "all" ]; then
+            echo 'value=["starlte","star2lte","crownlte"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "value=[\"$device\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: ${{ matrix.device }}
+    needs: setup
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ${{ fromJson(needs.setup.outputs.devices) }}
+
+    steps:
+      - name: Checkout build recipes
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev dwarves \
+            python3 make git curl unzip zip tar cpio lz4 \
+            libncurses-dev device-tree-compiler patch
+
+      - name: Fetch toolchain (Linaro GCC 6.4.1 aarch64, pinned)
+        run: |
+          TOOLCHAIN_DIR="$RUNNER_TEMP/toolchain"
+          git clone --quiet --depth=1 --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git \
+            "$TOOLCHAIN_DIR"
+          git -C "$TOOLCHAIN_DIR" checkout --quiet 16f73337b3616cfe640b0130629a9569b30482ca
+          "$TOOLCHAIN_DIR/bin/aarch64-linux-gnu-gcc" --version | head -1
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_DIR/bin" >> "$GITHUB_ENV"
+
+      - name: Build kernel
+        env:
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: |
+          export PATH="$TOOLCHAIN_BIN:$PATH"
+          ./scripts/build.sh --device "${{ matrix.device }}" \
+            --workdir "$RUNNER_TEMP/work" --jobs "$(nproc)"
+
+      - name: Show what we are shipping
+        run: |
+          ls -l dist
+          unzip -l dist/anykernel3-*-pe12-bakasu-susfs.zip | head -20
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pe12-bakasu-susfs-${{ matrix.device }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            dist/anykernel3-*.zip
+            dist/boot_*.img
+            dist/boot-*-ODIN.tar
