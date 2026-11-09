@@ -36,4 +36,4 @@ Güncel mevzuat kontrolü yapılmış bir hukuk görüşü değildir; ders anlat
 | Ek D | Kaynak eşleştirme, belirsizlikler, künye | Merak ettiğinde |
 | Dizin | Kavram – sayfa numarası | Aradığın terimi bulmak için |
 
->> Sayfa düzeni bilinçli olarak sıkı: A4, iki sütun, 9 punto metin. Amaç kâğıt ve baskı maliyetini yarıya indirirken okunabilirliği korumak. Çift yönlü (duplex) yazdırın; sol sütundan sağa akış kesintisiz devam eder.
+>> Sayfa düzeni bilinçli olarak sıkı: A4, tek sütun, geniş kenar boşluğu, 10 punto metin. Amaç ekranda ve kâğıtta aynı rahatlıkta okumak. Çift yönlü (duplex) yazdırın; sayfa akışı kesintisiz devam eder.

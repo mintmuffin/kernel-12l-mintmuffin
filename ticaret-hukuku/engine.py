@@ -60,7 +60,7 @@ class Rule(Flowable):
 class KeepGroup(Flowable):
     """Öğeleri bölmeden taşır: sığmıyorsa sütunu atlar (CondPageBreak'in aksine
     kırılma, başlık ile tablo arasına girmez)."""
-    def __init__(self, items, max_total=706):
+    def __init__(self, items, max_total=726):
         Flowable.__init__(self)
         self.items = [f for f in items if f is not None]
         self.max_total = max_total
@@ -93,7 +93,14 @@ class KeepGroup(Flowable):
             y -= h
             if isinstance(f, Heading):
                 TOC_SEQ[0] += 1
-                DEFERRED_TOC.append((TOC_SEQ[0], f._toc[0], f._toc[1], c.getPageNumber()))
+                lvl, txt = f._toc
+                DEFERRED_TOC.append((TOC_SEQ[0], lvl, txt, c.getPageNumber()))
+                try:
+                    key = "k%d" % TOC_SEQ[0]
+                    c.bookmarkPage(key)
+                    c.addOutlineEntry(txt, key, level=min(lvl, 2), closed=True)
+                except Exception:
+                    pass
             f.drawOn(c, 0, y)
 
 
@@ -243,10 +250,15 @@ class NotesBlock(Flowable):
         self.label, self.width, self.min_h = label, width, min_h
 
     def wrap(self, aw, ah):
-        self.height = max(self.min_h, ah - 6)
+        self.height = max(0, ah - 6)
+        if self.height < 64:            # az yer kaldıysa boş sayfa açmayalım
+            self.height = 0
+        self.height = max(self.height, 0)
         return self.width, self.height
 
     def draw(self):
+        if self.height < 64:
+            return
         c = self.canv
         c.setFillColor(GOLD)
         c.setFont("Sans-B", 6.3)
@@ -298,19 +310,52 @@ AS = ParagraphStyle("as", fontName="Body", fontSize=8.5, leading=11.2, textColor
 
 
 # ------------------------------------------------------------------ ayrıştırıcı
+def auto_widths(rows, width, ncol):
+    """Sütun genişliklerini hücre metinlerinin uzunluğuna göre dağıtır."""
+    if ncol == 1:
+        return [width]
+    lens = []
+    for j in range(ncol):
+        body = [len(str(r[j])) for r in rows[1:]]
+        head = len(str(rows[0][j])) * 0.75
+        vals = body + [head]
+        m = sum(vals) / max(len(vals), 1)
+        # en uzun hücre de pay alsın, ama baskın olmasın
+        lens.append(0.72 * m + 0.28 * max(vals))
+    if ncol == 2:
+        lo, hi = 0.18, 0.62
+    else:
+        lo, hi = 0.09, 0.46
+    raw = [max(l, 1.0) ** 0.62 for l in lens]
+    tot = sum(raw)
+    fr = [r / tot for r in raw]
+    # yumuşat: uçlarını sınırla, kalanı oransal dağıt
+    for _ in range(6):
+        over = [i for i, f in enumerate(fr) if f > hi]
+        under = [i for i, f in enumerate(fr) if f < lo]
+        if not over and not under:
+            break
+        fixed = {}
+        for i in over:
+            fixed[i] = hi
+        for i in under:
+            fixed[i] = lo
+        rest = [i for i in range(ncol) if i not in fixed]
+        budget = 1.0 - sum(fixed.values())
+        rtot = sum(raw[i] for i in rest) or 1.0
+        for i in fixed:
+            fr[i] = fixed[i]
+        for i in rest:
+            fr[i] = budget * raw[i] / rtot
+    return [width * f for f in fr]
+
+
 def make_table(caption, rows, width, S):
     if not rows:
         return []
     ncol = max(len(r) for r in rows)
     rows = [r + [""] * (ncol - len(r)) for r in rows]
-    if ncol == 1:
-        widths = [width]
-    elif ncol == 2:
-        widths = [width * 0.34, width * 0.66]
-    elif ncol == 3:
-        widths = [width * 0.24, width * 0.30, width * 0.46]
-    else:
-        widths = [width / ncol] * ncol
+    widths = auto_widths(rows, width, ncol)
     head = [Paragraph(inline(c), S["table_h"]) for c in rows[0]]
     body = [[Paragraph(inline(c), S["table"]) for c in r] for r in rows[1:]]
     t = Table([head] + body, colWidths=widths, hAlign="LEFT", repeatRows=1,
@@ -331,6 +376,41 @@ def make_table(caption, rows, width, S):
         out += [Paragraph(inline(caption), S["caption"]), Spacer(1, 2.0)]
     out += [t]
     return out
+
+
+def keep_headings(items, width, max_h=380):
+    """Sayfa altında yalnız kalan başlıkları engeller: başlık, ardından gelen
+    metin ya da kutucukla aynı grupta taşınır."""
+    res, i, n = [], 0, len(items)
+    while i < n:
+        f = items[i]
+        if isinstance(f, Heading) and i + 1 < n:
+            j, lead = i + 1, []
+            while j < n and isinstance(items[j], Spacer) and len(lead) < 2:
+                lead.append(items[j]); j += 1
+            nxt = items[j] if j < n else None
+            tail = None
+            if isinstance(nxt, Paragraph) and not isinstance(nxt, Heading):
+                tail = [nxt]
+            elif (isinstance(nxt, KeepGroup) and len(nxt.items) == 1
+                  and isinstance(nxt.items[0], Box)):
+                tail = list(nxt.items)
+            if tail:
+                grp = [f] + lead + tail
+                try:
+                    h = sum(x.wrap(width, 10000)[1] for x in grp)
+                except Exception:
+                    h = 10 ** 6
+                if 0 < h <= max_h:
+                    pre = []
+                    while res and isinstance(res[-1], Rule):
+                        pre.insert(0, res.pop())
+                    res.append(KeepGroup(pre + grp))
+                    i = j + 1
+                    continue
+        res.append(f)
+        i += 1
+    return res
 
 
 def parse(path, S, width, wide=False, full_width=None):
@@ -377,7 +457,7 @@ def parse(path, S, width, wide=False, full_width=None):
             else:
                 html = '<font name="Sans-SB" size="11.6" color="#12233B">%s</font>' % inline(txt)
                 plain = txt
-            pending.append(CondPageBreak(58))
+            pending.append(CondPageBreak(88))
             pending.append(Rule(width, color=RULE, t=0.5, pad=4.0))
             pending.append(Heading(html, S["h2"], 1, plain))
             i += 1; continue
@@ -501,7 +581,7 @@ def parse(path, S, width, wide=False, full_width=None):
         buf.append(s); i += 1
 
     flush(); flush_pending()
-    return out
+    return keep_headings(out, width)
 
 
 # ------------------------------------------------------------------ TOC / dizin
@@ -525,35 +605,26 @@ def toc_flowables(blocks, S, width=COL_W, max_rows=None):
         return items
 
     items = pack(blocks)
-    # iki sütuna dengeli böl
-    half = (len(items) + 1) // 2
-    cut = half
-    for k in range(max(0, half - 8), min(len(items), half + 8)):
-        if items[k][0] == "c":
-            cut = k
-            break
-    parts = [items[:cut], items[cut:]]
+    parts = [items]
     out = []
     for pi, part in enumerate(parts):
-        if pi:
-            out.append(FrameBreak())
         data, styles = [], []
         for kind, txt, page in part:
             if kind == "c":
                 data.append([Paragraph(inline(txt), S["toc_c"]),
-                             Paragraph('<font name="Sans-SB" size="8.6" color="#B08432">%s</font>' % page,
+                             Paragraph('<font name="Sans-SB" size="9.8" color="#B08432">%s</font>' % page,
                                        ParagraphStyle("p", alignment=TA_RIGHT))])
                 styles.append(("TOPPADDING", (0, len(data) - 1), (-1, len(data) - 1), 6.5))
             else:
                 data.append([Paragraph(inline(txt), S["toc_i"]),
-                             Paragraph('<font name="Sans-M" size="7.2" color="#6B7280">%s</font>' % page,
+                             Paragraph('<font name="Sans-M" size="8.2" color="#6B7280">%s</font>' % page,
                                        ParagraphStyle("p", alignment=TA_RIGHT))])
-        t = Table(data, colWidths=[width - 24, 24], hAlign="LEFT")
+        t = Table(data, colWidths=[width - 34, 34], hAlign="LEFT")
         st = [("VALIGN", (0, 0), (-1, -1), "TOP"),
               ("LEFTPADDING", (0, 0), (-1, -1), 0),
               ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-              ("TOPPADDING", (0, 0), (-1, -1), 0.8),
-              ("BOTTOMPADDING", (0, 0), (-1, -1), 0.9)]
+              ("TOPPADDING", (0, 0), (-1, -1), 0.5),
+              ("BOTTOMPADDING", (0, 0), (-1, -1), 0.6)]
         t.setStyle(TableStyle(st + styles))
         out.append(t)
     return out
@@ -567,28 +638,25 @@ def index_flowables(page_texts, S, start_page=4):
         key = tr_lower(term)
         pages = [p for p, t in norm if p >= start_page and key in t]
         if pages:
-            lab = "·".join(str(p) for p in pages[:5]) + ("…" if len(pages) > 5 else "")
+            lab = "·".join(str(p) for p in pages[:16]) + ("…" if len(pages) > 16 else "")
             rows.append((term, lab))
     rows.sort(key=lambda r: tr_key(r[0]))
-    out = []
-    step = max(12, (len(rows) + 1) // 2)
-    for k in range(0, len(rows), step):
-        part = rows[k:k + step]
-        if k:
-            out.append(FrameBreak())
-        data = [[Paragraph(inline(t), ParagraphStyle("ix", fontName="Sans-M", fontSize=7.3,
-                                                     leading=10.8, textColor=NAVY)),
-                 Paragraph('<font name="Sans-M" size="6.0" color="#8A8397">%s</font>' % lab,
-                           ParagraphStyle("ixp", alignment=TA_RIGHT, leading=10.8))]
-                for t, lab in part]
-        t = Table(data, colWidths=[COL_W - 58, 58], hAlign="LEFT")
-        t.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 2.0), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        out += [t, Spacer(1, 2)]
-    return out, len(rows)
+    if not rows:
+        return [], 0
+    data = [[Paragraph(inline(t), ParagraphStyle("ix", fontName="Sans-M", fontSize=8.4,
+                                                 leading=13.4, textColor=NAVY)),
+             Paragraph('<font name="Sans-M" size="6.6" color="#8A8397">%s</font>' % lab,
+                       ParagraphStyle("ixp", alignment=TA_RIGHT, leading=13.4))]
+            for t, lab in rows]
+    t = Table(data, colWidths=[COL_W - 252, 252], hAlign="LEFT", repeatRows=0,
+              splitByRow=1)
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.6), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.25, RULE),
+    ]))
+    return [t], len(rows)
 
 
 TERMS = [
@@ -628,22 +696,18 @@ class Book(BaseDocTemplate):
                      leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
         c1 = Frame(M_OUT, M_BOT, COL_W, PAGE_H - M_TOP - M_BOT, id="c1",
                    leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-        c2 = Frame(M_OUT + COL_W + GUTTER, M_BOT, COL_W, PAGE_H - M_TOP - M_BOT, id="c2",
-                   leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-        head_h = 104.0
+        head_h = 112.0
         top = Frame(M_OUT, PAGE_H - M_TOP - head_h, w, head_h, id="top",
                     leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-        ch_h = PAGE_H - M_TOP - head_h - 12 - M_BOT
+        ch_h = PAGE_H - M_TOP - head_h - 14 - M_BOT
         cc1 = Frame(M_OUT, M_BOT, COL_W, ch_h, id="cc1",
-                    leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-        cc2 = Frame(M_OUT + COL_W + GUTTER, M_BOT, COL_W, ch_h, id="cc2",
                     leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
         self.addPageTemplates([
             PageTemplate("cover", [full], onPage=self.draw_cover),
             PageTemplate("front", [full], onPage=self.draw_front),
-            PageTemplate("chapter", [top, cc1, cc2], onPage=self.draw_chapter),
-            PageTemplate("2col", [c1, c2], onPage=self.draw_body),
-            PageTemplate("toc2", [c1, c2], onPage=self.draw_toc),
+            PageTemplate("chapter", [top, cc1], onPage=self.draw_chapter),
+            PageTemplate("2col", [c1], onPage=self.draw_body),
+            PageTemplate("toc2", [c1], onPage=self.draw_toc),
         ])
 
     # --- çizimler
@@ -654,21 +718,21 @@ class Book(BaseDocTemplate):
         c.rect(0, PAGE_H - 9.2 * mm, PAGE_W, 0.9, stroke=0, fill=1)
         c.setFillColor(HexColor("#93A7BF"))
         c.setFont("Sans-B", 6.4)
-        c.drawString(M_OUT, PAGE_H - 6.2 * mm, tr_upper(left_txt))
+        c.drawString(48, PAGE_H - 6.2 * mm, tr_upper(left_txt))
         if right_txt:
             c.setFillColor(HexColor("#D8C08A"))
-            c.drawRightString(PAGE_W - M_IN, PAGE_H - 6.2 * mm, tr_upper(right_txt))
+            c.drawRightString(PAGE_W - 48, PAGE_H - 6.2 * mm, tr_upper(right_txt))
 
     def _foot(self, c, n):
         c.setStrokeColor(RULE)
         c.setLineWidth(0.4)
-        c.line(M_OUT, 26, PAGE_W - M_IN, 26)
+        c.line(48, 26, PAGE_W - 48, 26)
         c.setFillColor(MUTED)
         c.setFont("Sans", 6.2)
-        c.drawString(M_OUT, 17, "D1–D8 transkriptlerine dayalı genişletilmiş çalışma notu")
+        c.drawString(48, 17, "D1–D8 transkriptlerine dayalı genişletilmiş çalışma notu")
         c.setFillColor(NAVY)
         c.setFont("Sans-SB", 7.4)
-        c.drawRightString(PAGE_W - M_IN, 17, str(n))
+        c.drawRightString(PAGE_W - 48, 17, str(n))
 
     def draw_cover(self, c, doc):
         c.setFillColor(NAVY)
@@ -706,7 +770,7 @@ class Book(BaseDocTemplate):
         c.drawString(x + 14, PAGE_H - 312, "D1–D8 ders kayıtlarının tamamı, yeniden yazılıp düzenlenmiş hâli")
         c.setFillColor(HexColor("#93A7BF"))
         c.setFont("Sans", 8.0)
-        c.drawString(x + 14, PAGE_H - 328, "Kurallar · istisnalar · örnek olaylar · 60 soru · karşılaştırma tabloları")
+        c.drawString(x + 14, PAGE_H - 328, "Kurallar · istisnalar · örnek olaylar · 76 soru · karşılaştırma tabloları")
 
         # odak listesi
         c.setFillColor(colors.white)

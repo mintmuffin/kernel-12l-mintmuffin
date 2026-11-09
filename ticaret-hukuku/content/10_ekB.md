@@ -1,6 +1,6 @@
 # EK B | AKTİF TEKRAR | 76 Soru, 76 Cevap | Cevapları önce kaparak çalış. Yanlış yaptığın sorunun yanına bölüm numarasını yaz; son gün yalnız onları oku.
 
-## D1 – D2 · Çerçeve ve temeller
+### D1 – D2 · Çerçeve ve temeller
 
 ? TTK hangi altı kitaptan oluşur?
   = Ticari işletme, ticaret şirketleri, kıymetli evrak, taşıma işleri, deniz ticareti, sigorta.
@@ -32,7 +32,7 @@
 ? Ticaret Sicili Yönetmeliği'nin işlevi nedir?
   = TTK uygulamasını somutlaştıran, tescil ve ilan usulünü gösteren kaynaktır.
 
-## D3 · Ticari iş ve sonuçları
+### D3 · Ticari iş ve sonuçları
 
 ? Ticari iş kaç ölçütle belirlenir?
   = İki: TTK'da düzenlenen işler ve ticari işletmeyi ilgilendiren iş ve fiiller.
@@ -64,7 +64,7 @@
 ? Ticari iş–adi iş ayrımı yapılmazsa ne olur?
   = Genel hükümler uygulanır; ticari sonuçlar (teselsül, ticari faiz) devreye girmez.
 
-## D4 · Faiz
+### D4 · Faiz
 
 ? Anapara faizi ile temerrüt faizinin sebebi nedir?
   = Anapara faizi paranın kullanımı, temerrüt faizi borçlunun gecikmesidir.
@@ -96,7 +96,7 @@
 ? Fatura ve teyit mektubunda itiraz süresi nedir?
   = Faturada 8 gün; teyit mektubunda susma kural olarak kabul sayılır.
 
-## D5 · Kurallar, davalar, işletme
+### D5 · Kurallar, davalar, işletme
 
 ? Ticari uyuşmazlıkta uygulama sırası nedir?
   = Emredici hüküm, sözleşme, yedek ticari hüküm, ticari örf ve âdet, genel hükümler, hâkimin hukuk yaratması.
@@ -128,7 +128,7 @@
 ? Ticari davada delil rejimi farklı mıdır?
   = Ticari işlerde senetle ispat sınırları ve defter delili farklı sonuçlar doğurur.
 
-## D6 · Şube, unvan, devir
+### D6 · Şube, unvan, devir
 
 ? Şubenin tüzel kişiliği var mıdır?
   = Yoktur; merkeze bağlıdır, kendi adına hak ve borç edinemez.
@@ -160,7 +160,7 @@
 ? Rekabet etmeme yükümlülüğü devirde doğar mı?
   = Devralanın menfaati için sınırlı olarak; kapsamı ve süresi ölçülü olmalıdır.
 
-## D7 · Birleşme, rehin, tacirliğin kazanılması
+### D7 · Birleşme, rehin, tacirliğin kazanılması
 
 ? Birleşme ile devir arasındaki temel fark nedir?
   = Birleşmede külli halefiyet, devirde malvarlığı unsurlarının tek tek geçişi söz konusudur.
@@ -192,7 +192,7 @@
 ? Rehinli alacağın devri neyi etkiler?
   = Rehin hakkı alacağa bağlıdır; alacak devriyle kural olarak birlikte geçer.
 
-## D8 · Tacir, şirketler, ticari hükümler
+### D8 · Tacir, şirketler, ticari hükümler
 
 ? Tacir kimdir?
   = Bir ticari işletmeyi kısmen de olsa kendi adına işleten kişi; tüzel kişiler de tacir olabilir.

@@ -54,7 +54,7 @@ Bu metin, sekiz ders kaydının düzenlenmiş hâlidir; güncel mevzuat kontrol�
 | Baskı | Genişletilmiş 2. baskı, Kasım 2026 |
 | Kaynak | D1–D8 ders transkriptleri ve 36 sayfalık önceki not |
 | Kapsam | 8 bölüm, 4 ek, 13 karşılaştırma tablosu, 76 soru, kavram dizini |
-| Biçim | A4, iki sütun, 9 punto metin; çift yönlü baskıya uygun |
+| Biçim | A4, tek sütun, 10 punto metin; çift yönlü baskıya uygun |
 | Yazı tipleri | Source Serif 4 (metin), Inter (başlık ve tablo) |
 | Dil | Türkçe |
 

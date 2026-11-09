@@ -1,6 +1,6 @@
 # Ticari İşletme Hukuku — Vize Çalışma Kitapçığı
 
-A4, iki sütun, çift yönlü baskıya uygun **43 sayfalık** ders kitapçığı.
+A4, tek sütun, çift yönlü baskıya uygun **57 sayfalık** ders kitapçığı.
 Sekiz ders kaydının (D1–D8) düzenlenmiş hâli; sınav öncesi tek kaynaktan çalışmak için kuruldu.
 
 **Çıktı:** [`out/ticaret_hukuku_vize_calisma_kitapcigi.pdf`](out/ticaret_hukuku_vize_calisma_kitapcigi.pdf)
@@ -10,13 +10,13 @@ Sekiz ders kaydının (D1–D8) düzenlenmiş hâli; sınav öncesi tek kaynakta
 | Bölüm | Ne var |
 |---|---|
 | Ön söz | Kullanım planı (5 gün), "bu metin ne değildir" kutusu, kitapçığın haritası |
-| İçindekiler | 2 sayfa, 153 başlık, sayfa numaralı (PDF'te 146 yer imi) |
+| İçindekiler | 3 sayfa, 146 başlık, sayfa numaralı (PDF'te 159 yer imi) |
 | D1–D8 | 126 numaralı alt başlık: kapsam, sistemler, ticari iş, faiz, davalar/arabuluculuk, işletme, şube–unvan–marka, devir, birleşme, teslimsiz taşınır rehni, tacir ve şirket türleri, teyit mektubu–fatura–ihbar |
 | Ek A | 13 karşılaştırma tablosu |
 | Ek B | 76 soru–cevap (kaparak çalışma düzeni) |
 | Ek C | Tek sayfada ticaret hukuku: 16 kural, sayılar tablosu, on klasik hata |
 | Ek D | Kaynak eşleştirme, 12 belirsiz nokta, metnin sınırları, künye |
-| Dizin | 78 terim, Türkçe alfabetik, sayfa numaralı |
+| Dizin | 78 terim, Türkçe alfabetik, sayfa numaralı (2 sayfa) |
 
 ## Yeniden üretmek
 
@@ -32,6 +32,14 @@ Metin kaynakları `content/*.md`; biçimlendirme `book.py` (stiller, fontlar) ve
 `convert.py`, 36 sayfalık eski not PDF'ini (`ticaret_hukuku_vize_kitapcigi_compact.pdf`)
 `content/*.md` dosyalarına çeviren tek seferlik betiktir; yeniden çalıştırmak üretilmiş
 markdown'ı sıfırlar, normalde gerekmez.
+
+## Sayfa düzeni
+
+Tek sütun: 72 pt yan kenar, ~451 pt metin genişliği, 10,2 pt gövde metni / 14,2 pt satır aralığı.
+Tablo sütun genişlikleri hücre metinlerinin uzunluğuna göre otomatik dağıtılır (`engine.auto_widths`).
+Başlıklar, altındaki ilk paragraf ya da kutucukla aynı grupta taşınır; böylece sayfa altında
+yalnız başlık kalmaz. Bölüm sonu "üç cümlede" kutusunun altındaki çizgili not alanı kalan
+yüksekliği doldurur.
 
 ## İşaretleme (content/*.md)
 

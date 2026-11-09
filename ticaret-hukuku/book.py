@@ -33,12 +33,12 @@ PAPER  = colors.white
 
 # sayfa ölçüsü
 PAGE_W, PAGE_H = 595.2756, 841.8898
-M_TOP  = 46.0
-M_BOT  = 42.0
-M_OUT  = 38.0
-M_IN   = 52.0
-GUTTER = 21.0
-COL_W  = (PAGE_W - M_OUT - M_IN - GUTTER) / 2.0
+M_TOP  = 54.0
+M_BOT  = 50.0
+M_OUT  = 72.0            # tek sütun: okunaklı satır uzunluğu için geniş kenar
+M_IN   = 72.0
+GUTTER = 0.0
+COL_W  = PAGE_W - M_OUT - M_IN
 
 TR_UP = {"i": "İ", "ı": "I", "ğ": "Ğ", "ü": "Ü", "ş": "Ş", "ö": "Ö", "ç": "Ç", "â": "Â"}
 TR_LOW = {"İ": "i", "I": "ı", "Ğ": "ğ", "Ü": "ü", "Ş": "ş", "Ö": "ö", "Ç": "ç", "Â": "â"}
@@ -101,49 +101,49 @@ def inline(t):
 
 def styles():
     S = {}
-    S["body"] = ParagraphStyle("body", fontName="Body", fontSize=9.0, leading=12.3,
-                               textColor=INK, alignment=TA_JUSTIFY, spaceAfter=3.4,
+    S["body"] = ParagraphStyle("body", fontName="Body", fontSize=10.2, leading=14.2,
+                               textColor=INK, alignment=TA_JUSTIFY, spaceAfter=5.0,
                                hyphenationLang="", splitLongWords=1)
-    S["front_body"] = ParagraphStyle("front_body", parent=S["body"], fontSize=9.15,
-                                     leading=12.7, spaceAfter=3.6)
-    S["lead"] = ParagraphStyle("lead", fontName="Body", fontSize=9.8, leading=13.6,
+    S["front_body"] = ParagraphStyle("front_body", parent=S["body"], fontSize=10.3,
+                                     leading=14.4, spaceAfter=5.0)
+    S["lead"] = ParagraphStyle("lead", fontName="Body", fontSize=11.4, leading=16.0,
                                textColor=HexColor("#3B4657"), alignment=TA_JUSTIFY,
-                               spaceAfter=4.0)
-    S["h2"] = ParagraphStyle("h2", fontName="Sans-SB", fontSize=11.6, leading=13.8,
-                             textColor=NAVY, spaceBefore=1.0, spaceAfter=3.2,
+                               spaceAfter=6.0)
+    S["h2"] = ParagraphStyle("h2", fontName="Sans-SB", fontSize=13.4, leading=16.2,
+                             textColor=NAVY, spaceBefore=1.0, spaceAfter=4.4,
                              keepWithNext=1)
-    S["h3"] = ParagraphStyle("h3", fontName="Sans-SB", fontSize=9.2, leading=11.6,
-                             textColor=TEAL, spaceBefore=4.4, spaceAfter=2.0,
+    S["h3"] = ParagraphStyle("h3", fontName="Sans-SB", fontSize=10.4, leading=13.2,
+                             textColor=TEAL, spaceBefore=6.0, spaceAfter=2.6,
                              keepWithNext=1)
-    S["front_h"] = ParagraphStyle("front_h", fontName="Sans-SB", fontSize=12.6,
-                                  leading=15.0, textColor=NAVY, spaceBefore=2,
-                                  spaceAfter=4.6)
+    S["front_h"] = ParagraphStyle("front_h", fontName="Sans-SB", fontSize=13.6,
+                                  leading=16.4, textColor=NAVY, spaceBefore=2,
+                                  spaceAfter=5.6)
     S["kicker"] = ParagraphStyle("kicker", fontName="Sans-B", fontSize=7.2, leading=9.0,
                                  textColor=GOLD, spaceAfter=2.6)
     S["display"] = ParagraphStyle("display", fontName="Sans-SB", fontSize=34, leading=36,
                                   textColor=NAVY, spaceAfter=6)
-    S["caption"] = ParagraphStyle("caption", fontName="Sans-M", fontSize=6.9, leading=8.8,
-                                  textColor=GREY, spaceBefore=1.2, spaceAfter=2.4)
-    S["table"] = ParagraphStyle("table", fontName="Body", fontSize=7.65, leading=9.4,
+    S["caption"] = ParagraphStyle("caption", fontName="Sans-M", fontSize=7.6, leading=9.8,
+                                  textColor=GREY, spaceBefore=1.2, spaceAfter=2.6)
+    S["table"] = ParagraphStyle("table", fontName="Body", fontSize=8.5, leading=10.5,
                                 textColor=INK, alignment=TA_LEFT)
-    S["table_h"] = ParagraphStyle("table_h", fontName="Sans-SB", fontSize=6.9,
-                                  leading=8.4, textColor=colors.white)
-    S["bullet"] = ParagraphStyle("bullet", parent=S["body"], leftIndent=9.5,
-                                 bulletIndent=0.8, spaceAfter=2.2)
-    S["bullet2"] = ParagraphStyle("bullet2", parent=S["body"], leftIndent=18.0,
-                                  bulletIndent=10.0, fontSize=8.7, spaceAfter=1.8)
-    S["num"] = ParagraphStyle("num", parent=S["body"], leftIndent=13.0, bulletIndent=0.8,
-                              spaceAfter=2.2)
+    S["table_h"] = ParagraphStyle("table_h", fontName="Sans-SB", fontSize=7.6,
+                                  leading=9.4, textColor=colors.white)
+    S["bullet"] = ParagraphStyle("bullet", parent=S["body"], leftIndent=12.0,
+                                 bulletIndent=1.2, spaceAfter=3.4)
+    S["bullet2"] = ParagraphStyle("bullet2", parent=S["body"], leftIndent=24.0,
+                                  bulletIndent=13.0, fontSize=10.0, spaceAfter=2.6)
+    S["num"] = ParagraphStyle("num", parent=S["body"], leftIndent=16.0, bulletIndent=1.2,
+                              spaceAfter=3.4)
     S["box_lbl"] = ParagraphStyle("box_lbl", fontName="Sans-B", fontSize=6.5,
                                   leading=8.0, textColor=GREY)
-    S["box_body"] = ParagraphStyle("box_body", fontName="Body", fontSize=8.4,
-                                   leading=11.3, textColor=INK, alignment=TA_JUSTIFY,
-                                   spaceAfter=2.4)
-    S["toc_c"] = ParagraphStyle("toc_c", fontName="Sans-SB", fontSize=8.6, leading=11.0,
-                                textColor=NAVY, spaceBefore=5.5, spaceAfter=2.2)
-    S["toc_i"] = ParagraphStyle("toc_i", fontName="Body", fontSize=7.4, leading=9.4,
-                                textColor=INK, leftIndent=10, firstLineIndent=-10,
-                                spaceAfter=0.6)
+    S["box_body"] = ParagraphStyle("box_body", fontName="Body", fontSize=9.6,
+                                   leading=13.0, textColor=INK, alignment=TA_JUSTIFY,
+                                   spaceAfter=3.2)
+    S["toc_c"] = ParagraphStyle("toc_c", fontName="Sans-SB", fontSize=9.6, leading=12.2,
+                                textColor=NAVY, spaceBefore=4.6, spaceAfter=1.8)
+    S["toc_i"] = ParagraphStyle("toc_i", fontName="Body", fontSize=8.3, leading=10.2,
+                                textColor=INK, leftIndent=12, firstLineIndent=-12,
+                                spaceAfter=0.3)
     S["note_lbl"] = ParagraphStyle("note_lbl", fontName="Sans-B", fontSize=6.4,
                                    leading=8, textColor=GOLD)
     S["small"] = ParagraphStyle("small", fontName="Sans", fontSize=6.9, leading=9.2,
